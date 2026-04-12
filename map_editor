@@ -1,0 +1,791 @@
+"""
+Warp Maze - Map Editor  (multi-map edition)
+Run this in PyCharm to build your maps, then share them via map_player.html.
+
+Install:  pip install pygame
+
+Controls:
+  Left-click / drag    – place tile
+  Right-click / drag   – erase tile
+  Middle-click / drag  – pan the map
+  WASD / Arrow keys    – scroll the map
+  Scroll wheel         – zoom in/out (over grid) / scroll lists (over panel)
+  Ctrl+Z               – undo
+  Ctrl+S               – save current map
+
+Map library:
+  Your maps are saved automatically to maps.json next to this file.
+  Use the MAPS panel at the top of the sidebar to switch between maps,
+  create new ones, duplicate, rename, or delete them.
+  Each map has its own name, grid, and warp pairs.
+  Click SHARE CODE on any map to generate its shareable link code.
+"""
+
+import pygame
+import json
+import base64
+import sys
+import copy
+import os
+
+# ── Map dimensions ──────────────────────────────────────────────────────────
+COLS = 160
+ROWS = 120
+
+# ── Tile rendering ──────────────────────────────────────────────────────────
+TILE_MIN = 6
+TILE_MAX = 32
+TILE_DEF = 16
+
+# ── Window ──────────────────────────────────────────────────────────────────
+PANEL_W    = 260
+VIEW_W     = 960
+VIEW_H     = 700
+WIN_W      = VIEW_W + PANEL_W
+WIN_H      = VIEW_H
+SCROLL_SPD = 12
+
+# ── Tile IDs ────────────────────────────────────────────────────────────────
+EMPTY = 0
+WALL  = 1
+START = 2
+END   = 3
+ITEM  = 4
+ENEMY = 5
+WARP  = 6
+
+# ── Colours ─────────────────────────────────────────────────────────────────
+BG         = (20,  20,  35)
+GRID_LINE  = (35,  35,  55)
+PANEL_BG   = (14,  14,  25)
+PANEL_LINE = (50,  50,  80)
+TEXT_COL   = (200, 200, 230)
+HIGHLIGHT  = (255, 220,  60)
+BTN_NORM   = (35,  35,  58)
+BTN_HOVER  = (55,  55,  90)
+BTN_ACT    = (80,  60, 160)
+BTN_DEL    = (110,  30,  30)
+BTN_ADD    = (30,  100,  50)
+BTN_GREEN  = (40,  130,  60)
+MAP_ACTIVE = (50,  40,  100)
+MAP_HOVER  = (40,  40,   75)
+
+TILE_COLORS = {
+    EMPTY: (22, 22, 38), WALL: (55, 44, 30),
+    START: (30, 140, 60), END: (160, 50, 40),
+    ITEM: (180, 160, 20), ENEMY: (160, 40, 80),
+}
+TILE_LABELS = {WALL:"Wall", START:"Start", END:"Exit", ITEM:"Item", ENEMY:"Enemy"}
+
+SAVE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maps.json")
+
+
+def clamp(v, lo, hi): return max(lo, min(hi, v))
+
+def warp_color(index):
+    hue = (index * 137.508) % 360
+    sat = 0.75 + 0.2 * ((index % 3) / 3)
+    val = 0.85 + 0.12 * ((index % 5) / 5)
+    h = hue / 60; i = int(h); f = h - i
+    p = val*(1-sat); q = val*(1-sat*f); t = val*(1-sat*(1-f))
+    rgb = [(val,t,p),(q,val,p),(p,val,t),(p,q,val),(t,p,val),(val,p,q)][i%6]
+    return tuple(int(x*255) for x in rgb)
+
+def empty_map(name="New Map"):
+    return {
+        "name": name,
+        "grid": [[EMPTY]*COLS for _ in range(ROWS)],
+        "num_warps": 0,
+        "warp_counts": [],
+    }
+
+def map_to_dict(name, grid, num_warps, warp_counts):
+    return {"name": name, "grid": grid, "num_warps": num_warps,
+            "warp_counts": list(warp_counts)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+class Editor:
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((WIN_W, WIN_H), pygame.RESIZABLE)
+        pygame.display.set_caption("Warp Maze Editor")
+
+        self.font_sm  = pygame.font.SysFont("monospace", 10)
+        self.font_med = pygame.font.SysFont("monospace", 12, bold=True)
+        self.font_lg  = pygame.font.SysFont("monospace", 13, bold=True)
+
+        # ── Map library ──────────────────────────────────────────────────────
+        self.library      = []      # list of map dicts
+        self.active_idx   = 0       # which map is open
+        self.lib_scroll   = 0       # pixel scroll of library list
+        self.lib_renaming = -1      # index being renamed (-1 = none)
+        self.rename_buf   = ""
+
+        self.load_library()
+        if not self.library:
+            self.library.append(empty_map("Map 1"))
+            self.save_library()
+
+        # ── Per-map working state (loaded from active map) ───────────────────
+        self.grid        = []
+        self.num_warps   = 0
+        self.warp_counts = []
+        self.history     = []
+        self._load_active()
+
+        # ── Editor state ─────────────────────────────────────────────────────
+        self.sel_tile    = WALL
+        self.sel_warp    = 0
+        self.drawing     = False
+        self.erasing     = False
+        self.share_code  = ""
+        self.msg         = ""
+        self.msg_timer   = 0
+        self.btn_rects   = {}
+        self.warp_scroll = 0
+        self.warp_list_h = 0
+        self.WARP_ROW_H  = 27
+        self.LIB_ROW_H   = 30
+        self.lib_area_h  = 0
+
+        # ── Camera ───────────────────────────────────────────────────────────
+        self.tile_size = TILE_DEF
+        self.cam_x = 0.0; self.cam_y = 0.0
+        self.keys_held = set()
+        self.panning = False
+        self.pan_start = (0,0); self.cam_start = (0.0,0.0)
+
+    # ── Library persistence ──────────────────────────────────────────────────
+    def load_library(self):
+        if os.path.exists(SAVE_FILE):
+            try:
+                with open(SAVE_FILE, "r") as f:
+                    data = json.load(f)
+                self.library = data.get("maps", [])
+                self.active_idx = clamp(data.get("active", 0), 0, max(0, len(self.library)-1))
+                return
+            except Exception:
+                pass
+        self.library = []
+        self.active_idx = 0
+
+    def save_library(self):
+        # Flush current edits into library before saving
+        if self.library:
+            self.library[self.active_idx] = map_to_dict(
+                self.library[self.active_idx]["name"],
+                self.grid, self.num_warps, self.warp_counts)
+        try:
+            with open(SAVE_FILE, "w") as f:
+                json.dump({"maps": self.library, "active": self.active_idx}, f)
+        except Exception as e:
+            self.flash(f"Save failed: {e}")
+
+    def _load_active(self):
+        """Copy active library entry into working state."""
+        m = self.library[self.active_idx]
+        self.grid        = copy.deepcopy(m["grid"])
+        self.num_warps   = m.get("num_warps", 0)
+        self.warp_counts = list(m.get("warp_counts", [0]*self.num_warps))
+        # Ensure warp_counts length matches num_warps
+        while len(self.warp_counts) < self.num_warps:
+            self.warp_counts.append(0)
+        self.history = []
+        self.share_code = ""
+        self.cam_x = 0.0; self.cam_y = 0.0
+
+    def switch_map(self, idx):
+        """Save current, switch to idx."""
+        self.save_library()
+        self.active_idx = idx
+        self._load_active()
+        self.flash(f"Loaded: {self.library[idx]['name']}")
+
+    def new_map(self):
+        self.save_library()
+        name = f"Map {len(self.library)+1}"
+        self.library.append(empty_map(name))
+        self.active_idx = len(self.library) - 1
+        self._load_active()
+        self.save_library()
+        self.flash(f"Created: {name}")
+        # Scroll lib to bottom
+        self.lib_scroll = max(0, len(self.library)*self.LIB_ROW_H - self.lib_area_h)
+
+    def duplicate_map(self, idx):
+        self.save_library()
+        src = self.library[idx]
+        dup = copy.deepcopy(src)
+        dup["name"] = src["name"] + " copy"
+        insert_at = idx + 1
+        self.library.insert(insert_at, dup)
+        self.active_idx = insert_at
+        self._load_active()
+        self.save_library()
+        self.flash(f"Duplicated: {dup['name']}")
+
+    def delete_map(self, idx):
+        if len(self.library) <= 1:
+            self.flash("Can't delete the last map!"); return
+        self.library.pop(idx)
+        self.active_idx = clamp(idx, 0, len(self.library)-1)
+        self._load_active()
+        self.save_library()
+        self.flash("Map deleted")
+
+    def start_rename(self, idx):
+        self.lib_renaming = idx
+        self.rename_buf   = self.library[idx]["name"]
+
+    def finish_rename(self):
+        if self.lib_renaming >= 0:
+            name = self.rename_buf.strip() or self.library[self.lib_renaming]["name"]
+            self.library[self.lib_renaming]["name"] = name
+            self.lib_renaming = -1
+            self.save_library()
+
+    def cancel_rename(self):
+        self.lib_renaming = -1
+
+    # ── Warp pair management ─────────────────────────────────────────────────
+    def add_warp(self):
+        self.warp_counts.append(0)
+        self.num_warps += 1
+        self.sel_tile = WARP
+        self.sel_warp = self.num_warps - 1
+        self.flash(f"Added Warp {self.num_warps} — place 2 tiles")
+        self.warp_scroll = max(0, self.num_warps*self.WARP_ROW_H - self.warp_list_h + 10)
+
+    def delete_warp(self, idx):
+        self._push()
+        for r in range(ROWS):
+            for c in range(COLS):
+                v = self.grid[r][c]
+                if   v == WARP + idx: self.grid[r][c] = EMPTY
+                elif v >  WARP + idx: self.grid[r][c] = v - 1
+        self.warp_counts.pop(idx)
+        self.num_warps -= 1
+        if self.sel_warp >= self.num_warps and self.num_warps > 0:
+            self.sel_warp = self.num_warps - 1
+        if self.num_warps == 0:
+            self.sel_tile = WALL
+        self.flash(f"Deleted warp pair {idx+1}")
+
+    # ── History ──────────────────────────────────────────────────────────────
+    def _push(self):
+        self.history.append((copy.deepcopy(self.grid), list(self.warp_counts), self.num_warps))
+        if len(self.history) > 60: self.history.pop(0)
+
+    def undo(self):
+        if self.history:
+            self.grid, self.warp_counts, self.num_warps = self.history.pop()
+            self.flash("Undo!")
+
+    def clear(self):
+        self._push()
+        self.grid = [[EMPTY]*COLS for _ in range(ROWS)]
+        self.warp_counts = [0]*self.num_warps
+        self.flash("Grid cleared")
+
+    # ── Camera ───────────────────────────────────────────────────────────────
+    def cam_max_x(self): return max(0.0, COLS*self.tile_size - VIEW_W)
+    def cam_max_y(self): return max(0.0, ROWS*self.tile_size - VIEW_H)
+    def clamp_cam(self):
+        self.cam_x = clamp(self.cam_x, 0, self.cam_max_x())
+        self.cam_y = clamp(self.cam_y, 0, self.cam_max_y())
+
+    def screen_to_cell(self, mx, my):
+        if mx >= VIEW_W or mx < 0 or my < 0 or my >= VIEW_H: return None
+        c = int((mx + self.cam_x) / self.tile_size)
+        r = int((my + self.cam_y) / self.tile_size)
+        return (c, r) if 0 <= c < COLS and 0 <= r < ROWS else None
+
+    # ── Tile placement ───────────────────────────────────────────────────────
+    def place(self, c, r):
+        if self.sel_tile == WARP:
+            if self.num_warps == 0: self.flash("Add a warp pair first!"); return
+            wv = WARP + self.sel_warp
+            if self.grid[r][c] == wv: return
+            if self.warp_counts[self.sel_warp] >= 2:
+                self.flash(f"Warp {self.sel_warp+1} already has 2 tiles!"); return
+            self._push()
+            old = self.grid[r][c]
+            if old >= WARP: self.warp_counts[old-WARP] = max(0, self.warp_counts[old-WARP]-1)
+            self.grid[r][c] = wv
+            self.warp_counts[self.sel_warp] += 1
+        else:
+            if self.grid[r][c] == self.sel_tile: return
+            self._push()
+            old = self.grid[r][c]
+            if old >= WARP: self.warp_counts[old-WARP] = max(0, self.warp_counts[old-WARP]-1)
+            self.grid[r][c] = self.sel_tile
+
+    def erase(self, c, r):
+        if self.grid[r][c] == EMPTY: return
+        self._push()
+        old = self.grid[r][c]
+        if old >= WARP: self.warp_counts[old-WARP] = max(0, self.warp_counts[old-WARP]-1)
+        self.grid[r][c] = EMPTY
+
+    # ── Share code ───────────────────────────────────────────────────────────
+    def generate_code(self):
+        starts = sum(1 for row in self.grid for v in row if v == START)
+        ends   = sum(1 for row in self.grid for v in row if v == END)
+        if starts == 0: self.flash("Need at least 1 Start tile!"); return
+        if ends   == 0: self.flash("Need at least 1 Exit tile!");  return
+        bad = [i for i in range(self.num_warps) if self.warp_counts[i] == 1]
+        if bad: self.flash(f"Warp {bad[0]+1} needs exactly 2 tiles!"); return
+
+        name = self.library[self.active_idx]["name"]
+        data = {"name": name, "cols": COLS, "rows": ROWS,
+                "num_warps": self.num_warps, "grid": self.grid}
+        raw  = json.dumps(data, separators=(",",":"))
+        code = base64.urlsafe_b64encode(raw.encode()).decode()
+        self.share_code = code
+
+        # Save code to a file named after the map
+        safe = "".join(c for c in name if c.isalnum() or c in " _-").strip().replace(" ","_")
+        fname = f"{safe}_code.txt" if safe else "map_code.txt"
+        with open(fname, "w") as f:
+            f.write(code)
+        self.flash(f"Code saved to {fname}")
+        print(f"\n{'='*55}")
+        print(f"  SHARE CODE for '{name}'  →  saved to {fname}")
+        print(f"{'='*55}")
+        print(code[:80] + ("…" if len(code)>80 else ""))
+        print(f"{'='*55}\n")
+
+    def flash(self, msg):
+        self.msg = msg; self.msg_timer = 200
+
+    # ── Draw: grid ───────────────────────────────────────────────────────────
+    def draw_grid(self):
+        T = self.tile_size
+        c0 = int(self.cam_x/T); r0 = int(self.cam_y/T)
+        c1 = min(COLS, c0+VIEW_W//T+2); r1 = min(ROWS, r0+VIEW_H//T+2)
+        for r in range(r0, r1):
+            for c in range(c0, c1):
+                sx = int(c*T - self.cam_x); sy = int(r*T - self.cam_y)
+                val = self.grid[r][c]
+                gap = 1 if T > 6 else 0
+                if   val == WALL:  color = TILE_COLORS[WALL]
+                elif val == EMPTY: color = (22,22,38) if (r+c)%2==0 else (18,18,34)
+                elif val == START: color = TILE_COLORS[START]
+                elif val == END:   color = TILE_COLORS[END]
+                elif val == ITEM:  color = TILE_COLORS[ITEM]
+                elif val == ENEMY: color = TILE_COLORS[ENEMY]
+                else:              color = warp_color(val-WARP)
+                rect = pygame.Rect(sx, sy, T-gap, T-gap)
+                pygame.draw.rect(self.screen, color, rect)
+                if T >= 14 and val not in (EMPTY, WALL):
+                    if   val==START: lbl,fc="S",(200,255,200)
+                    elif val==END:   lbl,fc="E",(255,180,180)
+                    elif val==ITEM:  lbl,fc="*",(255,240,100)
+                    elif val==ENEMY: lbl,fc="!",(255,150,180)
+                    else:            lbl,fc=str(val-WARP+1),(255,255,255)
+                    t = self.font_sm.render(lbl, True, fc)
+                    self.screen.blit(t, t.get_rect(center=rect.center))
+        if T >= 8:
+            for c in range(c0, c1+1):
+                sx = int(c*T-self.cam_x)
+                pygame.draw.line(self.screen, GRID_LINE, (sx,0),(sx,VIEW_H))
+            for r in range(r0, r1+1):
+                sy = int(r*T-self.cam_y)
+                pygame.draw.line(self.screen, GRID_LINE, (0,sy),(VIEW_W,sy))
+
+    # ── Draw: minimap ─────────────────────────────────────────────────────────
+    def draw_minimap(self, px, y):
+        MW, MH = 238, 130
+        surf = pygame.Surface((MW, MH)); surf.fill((10,10,20))
+        scx, scy = MW/COLS, MH/ROWS
+        for r in range(ROWS):
+            for c in range(COLS):
+                v = self.grid[r][c]
+                if v == EMPTY: continue
+                if   v==WALL:  col=(80,65,45)
+                elif v==START: col=(50,180,80)
+                elif v==END:   col=(200,60,50)
+                elif v==ITEM:  col=(200,180,30)
+                elif v==ENEMY: col=(200,50,90)
+                else:          col=warp_color(v-WARP)
+                mr = pygame.Rect(int(c*scx),int(r*scy),max(1,int(scx)+1),max(1,int(scy)+1))
+                pygame.draw.rect(surf, col, mr)
+        T=self.tile_size
+        vx=int(self.cam_x/T*scx); vy=int(self.cam_y/T*scy)
+        vw=max(4,int(VIEW_W/T*scx)); vh=max(4,int(VIEW_H/T*scy))
+        pygame.draw.rect(surf, HIGHLIGHT, (vx,vy,vw,vh), 1)
+        self.screen.blit(surf, (px+10, y))
+        pygame.draw.rect(self.screen, (80,80,120), (px+10,y,MW,MH), 1)
+
+    # ── Draw: full panel ──────────────────────────────────────────────────────
+    def draw_panel(self):
+        px = VIEW_W
+        pygame.draw.rect(self.screen, PANEL_BG, (px,0,PANEL_W,WIN_H))
+        pygame.draw.line(self.screen, PANEL_LINE, (px,0),(px,WIN_H), 2)
+        mx2, my2 = pygame.mouse.get_pos()
+        self.btn_rects = {}
+        y = 6
+
+        # ════════════════════════════════════════
+        # MAP LIBRARY SECTION
+        # ════════════════════════════════════════
+        t = self.font_lg.render("MY MAPS", True, HIGHLIGHT)
+        self.screen.blit(t, (px+8, y))
+        # [+ NEW MAP] button
+        new_r = pygame.Rect(px+PANEL_W-82, y-1, 76, 18)
+        pygame.draw.rect(self.screen, BTN_HOVER if new_r.collidepoint(mx2,my2) else BTN_ADD, new_r, border_radius=3)
+        t2 = self.font_sm.render("+ NEW MAP", True, (200,255,200))
+        self.screen.blit(t2, t2.get_rect(center=new_r.center))
+        self.btn_rects["NEW_MAP"] = new_r
+        y += 20
+
+        # Library list area
+        LIB_TOP = y
+        LIB_H   = min(len(self.library) * self.LIB_ROW_H + 4,
+                      max(self.LIB_ROW_H, WIN_H // 5))
+        self.lib_area_h = LIB_H
+        LRH = self.LIB_ROW_H
+
+        old_clip = self.screen.get_clip()
+        self.screen.set_clip(pygame.Rect(px, LIB_TOP, PANEL_W, LIB_H))
+        self.lib_row_rects  = []
+        self.lib_dup_rects  = []
+        self.lib_del_rects  = []
+
+        for i, m in enumerate(self.library):
+            ry = LIB_TOP + i*LRH - int(self.lib_scroll)
+            if ry + LRH < LIB_TOP or ry > LIB_TOP + LIB_H:
+                self.lib_row_rects.append(None)
+                self.lib_dup_rects.append(None)
+                self.lib_del_rects.append(None)
+                continue
+
+            is_active = (i == self.active_idx)
+            row_r = pygame.Rect(px+4, ry+1, PANEL_W-60, LRH-2)
+            dup_r = pygame.Rect(px+PANEL_W-54, ry+4, 22, LRH-9)
+            del_r = pygame.Rect(px+PANEL_W-28, ry+4, 22, LRH-9)
+
+            bg = MAP_ACTIVE if is_active else (MAP_HOVER if row_r.collidepoint(mx2,my2) else (24,24,42))
+            pygame.draw.rect(self.screen, bg, row_r, border_radius=3)
+            if is_active:
+                pygame.draw.rect(self.screen, HIGHLIGHT, row_r, 1, border_radius=3)
+
+            # Name or rename input
+            if self.lib_renaming == i:
+                # Draw text input box
+                inp_r = pygame.Rect(px+6, ry+4, PANEL_W-64, LRH-10)
+                pygame.draw.rect(self.screen, (10,10,20), inp_r)
+                pygame.draw.rect(self.screen, HIGHLIGHT, inp_r, 1)
+                disp = self.rename_buf + "|"
+                t = self.font_sm.render(disp[:26], True, HIGHLIGHT)
+                self.screen.blit(t, (inp_r.x+3, inp_r.y+3))
+            else:
+                name_col = HIGHLIGHT if is_active else TEXT_COL
+                name_str = m["name"][:22] + ("…" if len(m["name"])>22 else "")
+                t = self.font_sm.render(name_str, True, name_col)
+                self.screen.blit(t, (px+8, ry+9))
+
+            # Duplicate button (⧉)
+            dbg = BTN_HOVER if dup_r.collidepoint(mx2,my2) else (50,50,90)
+            pygame.draw.rect(self.screen, dbg, dup_r, border_radius=3)
+            t = self.font_sm.render("⧉", True, (180,180,255))
+            self.screen.blit(t, t.get_rect(center=dup_r.center))
+
+            # Delete button (x)
+            xbg = BTN_HOVER if del_r.collidepoint(mx2,my2) else BTN_DEL
+            pygame.draw.rect(self.screen, xbg, del_r, border_radius=3)
+            t = self.font_sm.render("x", True, (255,140,140))
+            self.screen.blit(t, t.get_rect(center=del_r.center))
+
+            self.lib_row_rects.append(row_r)
+            self.lib_dup_rects.append(dup_r)
+            self.lib_del_rects.append(del_r)
+
+        # Scrollbar for library
+        if len(self.library)*LRH > LIB_H:
+            total = len(self.library)*LRH
+            bh = max(14, int(LIB_H*LIB_H/total))
+            by = LIB_TOP + int(self.lib_scroll/total*LIB_H)
+            pygame.draw.rect(self.screen,(40,40,70),(px+PANEL_W-5,LIB_TOP,4,LIB_H))
+            pygame.draw.rect(self.screen,HIGHLIGHT,(px+PANEL_W-5,by,4,bh))
+
+        self.screen.set_clip(old_clip)
+        y = LIB_TOP + LIB_H + 4
+
+        # Rename hint
+        if self.lib_renaming >= 0:
+            t = self.font_sm.render("Enter=confirm  Esc=cancel", True, (140,140,80))
+            self.screen.blit(t, (px+8, y)); y += 14
+
+        pygame.draw.line(self.screen, PANEL_LINE, (px+6,y),(px+PANEL_W-6,y)); y += 6
+
+        # ════════════════════════════════════════
+        # TILE PALETTE
+        # ════════════════════════════════════════
+        t = self.font_lg.render("TILE PALETTE", True, HIGHLIGHT)
+        self.screen.blit(t, (px+8, y)); y += 20
+
+        for tid in [WALL, START, END, ITEM, ENEMY]:
+            sel  = (self.sel_tile == tid)
+            rect = pygame.Rect(px+6, y, PANEL_W-12, 24)
+            bg   = BTN_ACT if sel else (BTN_HOVER if rect.collidepoint(mx2,my2) else BTN_NORM)
+            pygame.draw.rect(self.screen, bg, rect, border_radius=3)
+            if sel: pygame.draw.rect(self.screen, HIGHLIGHT, rect, 2, border_radius=3)
+            pygame.draw.rect(self.screen, TILE_COLORS[tid], (px+10, y+5, 12,12))
+            t = self.font_med.render(TILE_LABELS[tid], True, TEXT_COL)
+            self.screen.blit(t, (px+26, y+5))
+            y += 28
+
+        y += 4
+        pygame.draw.line(self.screen, PANEL_LINE, (px+6,y),(px+PANEL_W-6,y)); y += 6
+
+        # ════════════════════════════════════════
+        # WARP PAIRS
+        # ════════════════════════════════════════
+        t = self.font_lg.render("WARP PAIRS", True, HIGHLIGHT)
+        self.screen.blit(t, (px+8, y))
+        add_r = pygame.Rect(px+PANEL_W-88, y-1, 82, 18)
+        pygame.draw.rect(self.screen, BTN_HOVER if add_r.collidepoint(mx2,my2) else BTN_ADD, add_r, border_radius=3)
+        t2 = self.font_sm.render("+ ADD WARP", True, (200,255,200))
+        self.screen.blit(t2, t2.get_rect(center=add_r.center))
+        self.btn_rects["ADD_WARP"] = add_r
+        y += 18
+        hint = self.font_sm.render("Place 2 tiles = linked pair", True, (110,110,150))
+        self.screen.blit(hint, (px+8, y)); y += 14
+
+        WARP_TOP = y
+        FIXED_BELOW = 195
+        warp_area_h = max(50, WIN_H - WARP_TOP - FIXED_BELOW)
+        self.warp_list_h = warp_area_h
+        WRH = self.WARP_ROW_H
+
+        old_clip = self.screen.get_clip()
+        self.screen.set_clip(pygame.Rect(px, WARP_TOP, PANEL_W, warp_area_h))
+        self.warp_row_rects = []
+        self.warp_del_rects = []
+
+        for i in range(self.num_warps):
+            ry = WARP_TOP + i*WRH - int(self.warp_scroll)
+            if ry+WRH < WARP_TOP or ry > WARP_TOP+warp_area_h:
+                self.warp_row_rects.append(None); self.warp_del_rects.append(None); continue
+            sel   = (self.sel_tile==WARP and self.sel_warp==i)
+            row_r = pygame.Rect(px+6, ry, PANEL_W-34, WRH-3)
+            del_r = pygame.Rect(px+PANEL_W-28, ry+3, 22, WRH-8)
+            bg = BTN_ACT if sel else (BTN_HOVER if row_r.collidepoint(mx2,my2) else BTN_NORM)
+            pygame.draw.rect(self.screen, bg, row_r, border_radius=3)
+            if sel: pygame.draw.rect(self.screen, HIGHLIGHT, row_r, 2, border_radius=3)
+            pygame.draw.rect(self.screen, warp_color(i), (px+10, ry+6, 10, 10))
+            cnt = self.warp_counts[i] if i < len(self.warp_counts) else 0
+            t = self.font_sm.render(f"Warp {i+1}  [{cnt}/2]", True, TEXT_COL)
+            self.screen.blit(t, (px+25, ry+7))
+            dbg = BTN_HOVER if del_r.collidepoint(mx2,my2) else BTN_DEL
+            pygame.draw.rect(self.screen, dbg, del_r, border_radius=3)
+            t = self.font_sm.render("x", True, (255,160,160))
+            self.screen.blit(t, t.get_rect(center=del_r.center))
+            self.warp_row_rects.append(row_r); self.warp_del_rects.append(del_r)
+
+        if self.num_warps*WRH > warp_area_h:
+            total = self.num_warps*WRH
+            bh = max(14, int(warp_area_h*warp_area_h/total))
+            by = WARP_TOP + int(self.warp_scroll/total*warp_area_h)
+            pygame.draw.rect(self.screen,(40,40,70),(px+PANEL_W-5,WARP_TOP,4,warp_area_h))
+            pygame.draw.rect(self.screen,HIGHLIGHT,(px+PANEL_W-5,by,4,bh))
+
+        self.screen.set_clip(old_clip)
+        y = WARP_TOP + warp_area_h + 4
+        pygame.draw.line(self.screen, PANEL_LINE, (px+6,y),(px+PANEL_W-6,y)); y += 4
+
+        # ════════════════════════════════════════
+        # ACTION BUTTONS
+        # ════════════════════════════════════════
+        zoom_t = self.font_sm.render(f"Zoom: {self.tile_size}px  (scroll wheel)", True, (90,90,130))
+        self.screen.blit(zoom_t, (px+8, y)); y += 14
+
+        for lbl, col in [("SHARE CODE",   (50,130,70)),
+                          ("SAVE  Ctrl+S", (50,70,130)),
+                          ("UNDO  Ctrl+Z", (70,70,110)),
+                          ("CLEAR GRID",   (110,50,50))]:
+            r = pygame.Rect(px+6, y, PANEL_W-12, 26)
+            bg = BTN_HOVER if r.collidepoint(mx2,my2) else col
+            pygame.draw.rect(self.screen, bg, r, border_radius=4)
+            t = self.font_med.render(lbl, True, (220,220,255))
+            self.screen.blit(t, t.get_rect(center=r.center))
+            self.btn_rects[lbl] = r
+            y += 30
+
+        # Minimap
+        t = self.font_sm.render("MINIMAP", True, (90,90,140))
+        self.screen.blit(t, (px+8, y)); y += 12
+        self.draw_minimap(px, y); y += 144
+
+        # Bottom hints
+        for h in ["LMB:place  RMB:erase  MMB:pan",
+                  "WASD:scroll  Wheel:zoom/scroll"]:
+            t = self.font_sm.render(h, True, (55,55,95))
+            self.screen.blit(t, (px+6, y)); y += 13
+
+        # Flash message
+        if self.msg_timer > 0:
+            t = self.font_med.render(self.msg, True, HIGHLIGHT)
+            self.screen.blit(t, t.get_rect(center=(VIEW_W//2, VIEW_H-22)))
+            self.msg_timer -= 1
+
+    # ── Panel click handling ──────────────────────────────────────────────────
+    def handle_panel_click(self, mx, my):
+        # NEW MAP button
+        if self.btn_rects.get("NEW_MAP", pygame.Rect(0,0,0,0)).collidepoint(mx,my):
+            self.finish_rename(); self.new_map(); return
+
+        # Library rows (double-click to rename, single to switch)
+        if hasattr(self, 'lib_row_rects'):
+            for i, (row_r, dup_r, del_r) in enumerate(
+                    zip(self.lib_row_rects, self.lib_dup_rects, self.lib_del_rects)):
+                if del_r and del_r.collidepoint(mx,my):
+                    self.finish_rename(); self.delete_map(i); return
+                if dup_r and dup_r.collidepoint(mx,my):
+                    self.finish_rename(); self.duplicate_map(i); return
+                if row_r and row_r.collidepoint(mx,my):
+                    if self.lib_renaming == i:
+                        pass  # clicking inside rename box — ignore
+                    elif i == self.active_idx:
+                        self.start_rename(i)  # click active map to rename
+                    else:
+                        self.finish_rename(); self.switch_map(i)
+                    return
+
+        # ADD WARP
+        if self.btn_rects.get("ADD_WARP", pygame.Rect(0,0,0,0)).collidepoint(mx,my):
+            self.add_warp(); return
+
+        # Warp rows
+        if hasattr(self, 'warp_row_rects'):
+            for i, (row_r, del_r) in enumerate(zip(self.warp_row_rects, self.warp_del_rects)):
+                if del_r and del_r.collidepoint(mx,my):
+                    self.delete_warp(i); return
+                if row_r and row_r.collidepoint(mx,my):
+                    self.sel_tile=WARP; self.sel_warp=i; return
+
+        # Tile palette
+        px = VIEW_W; y = 6
+        # Skip past library area: header(20) + lib_area_h + 4 + divider(6)
+        y += 20 + self.lib_area_h + 4 + 6
+        if self.lib_renaming >= 0: y += 14
+        y += 20  # palette header
+        for tid in [WALL, START, END, ITEM, ENEMY]:
+            if pygame.Rect(px+6, y, PANEL_W-12, 24).collidepoint(mx,my):
+                self.sel_tile = tid; return
+            y += 28
+
+        # Action buttons
+        for lbl, action in [("SHARE CODE",   self.generate_code),
+                             ("SAVE  Ctrl+S", self.save_library),
+                             ("UNDO  Ctrl+Z", self.undo),
+                             ("CLEAR GRID",   self.clear)]:
+            if self.btn_rects.get(lbl, pygame.Rect(0,0,0,0)).collidepoint(mx,my):
+                action(); return
+
+    def handle_panel_scroll(self, mx, my, y_amount):
+        px = VIEW_W
+        if mx < px: return
+        # Decide whether to scroll the library or warp list based on mouse y
+        lib_top  = 26
+        lib_bot  = lib_top + self.lib_area_h
+        if lib_top <= my <= lib_bot:
+            max_scroll = max(0, len(self.library)*self.LIB_ROW_H - self.lib_area_h)
+            self.lib_scroll = clamp(self.lib_scroll - y_amount*20, 0, max_scroll)
+        else:
+            max_scroll = max(0, self.num_warps*self.WARP_ROW_H - self.warp_list_h)
+            self.warp_scroll = clamp(self.warp_scroll - y_amount*20, 0, max_scroll)
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+    def run(self):
+        clock = pygame.time.Clock()
+        while True:
+            clock.tick(60)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.save_library(); pygame.quit(); sys.exit()
+
+                elif event.type == pygame.KEYDOWN:
+                    self.keys_held.add(event.key)
+
+                    # Rename input
+                    if self.lib_renaming >= 0:
+                        if event.key == pygame.K_RETURN:  self.finish_rename()
+                        elif event.key == pygame.K_ESCAPE: self.cancel_rename()
+                        elif event.key == pygame.K_BACKSPACE:
+                            self.rename_buf = self.rename_buf[:-1]
+                        elif event.unicode and len(self.rename_buf) < 40:
+                            self.rename_buf += event.unicode
+                        continue   # swallow all keys during rename
+
+                    if event.key == pygame.K_z and (event.mod & pygame.KMOD_CTRL):
+                        self.undo()
+                    elif event.key == pygame.K_s and (event.mod & pygame.KMOD_CTRL):
+                        self.save_library(); self.flash("Saved!")
+
+                elif event.type == pygame.KEYUP:
+                    self.keys_held.discard(event.key)
+
+                elif event.type == pygame.MOUSEWHEEL:
+                    mx, my = pygame.mouse.get_pos()
+                    if mx < VIEW_W:
+                        old_t = self.tile_size
+                        self.tile_size = clamp(self.tile_size + event.y*2, TILE_MIN, TILE_MAX)
+                        scale = self.tile_size / old_t
+                        self.cam_x = (self.cam_x + mx)*scale - mx
+                        self.cam_y = (self.cam_y + my)*scale - my
+                        self.clamp_cam()
+                    else:
+                        self.handle_panel_scroll(mx, my, event.y)
+
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    mx, my = event.pos
+                    if mx >= VIEW_W:
+                        self.handle_panel_click(mx, my)
+                    elif event.button == 2:
+                        self.panning=True; self.pan_start=(mx,my); self.cam_start=(self.cam_x,self.cam_y)
+                    elif event.button == 1:
+                        self.drawing=True; self.erasing=False
+                        cell = self.screen_to_cell(mx,my)
+                        if cell: self.place(*cell)
+                    elif event.button == 3:
+                        self.erasing=True; self.drawing=False
+                        cell = self.screen_to_cell(mx,my)
+                        if cell: self.erase(*cell)
+
+                elif event.type == pygame.MOUSEBUTTONUP:
+                    if event.button==2: self.panning=False
+                    if event.button==1: self.drawing=False
+                    if event.button==3: self.erasing=False
+
+                elif event.type == pygame.MOUSEMOTION:
+                    mx, my = event.pos
+                    if self.panning:
+                        self.cam_x = self.cam_start[0]+(self.pan_start[0]-mx)
+                        self.cam_y = self.cam_start[1]+(self.pan_start[1]-my)
+                        self.clamp_cam()
+                    elif mx < VIEW_W:
+                        cell = self.screen_to_cell(mx,my)
+                        if cell:
+                            if self.drawing:  self.place(*cell)
+                            elif self.erasing: self.erase(*cell)
+
+            # Keyboard scroll
+            if self.keys_held & {pygame.K_RIGHT,pygame.K_d}: self.cam_x += SCROLL_SPD
+            if self.keys_held & {pygame.K_LEFT, pygame.K_a}: self.cam_x -= SCROLL_SPD
+            if self.keys_held & {pygame.K_DOWN, pygame.K_s}: self.cam_y += SCROLL_SPD
+            if self.keys_held & {pygame.K_UP,   pygame.K_w}: self.cam_y -= SCROLL_SPD
+            if self.keys_held & {pygame.K_RIGHT,pygame.K_d,pygame.K_LEFT,pygame.K_a,
+                                  pygame.K_DOWN, pygame.K_s,pygame.K_UP,  pygame.K_w}:
+                self.clamp_cam()
+
+            self.screen.fill(BG)
+            self.draw_grid()
+            self.draw_panel()
+            pygame.display.flip()
+
+
+if __name__ == "__main__":
+    Editor().run()
