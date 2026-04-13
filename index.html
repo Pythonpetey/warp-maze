@@ -295,6 +295,29 @@ html, body {
   overflow-y: auto;
   resize: none;
 }
+/* Minimap overlay */
+#minimap-canvas {
+  position: absolute;
+  bottom: 10px; right: 10px;
+  border: 2px solid rgba(255,216,77,.6);
+  border-radius: 6px;
+  cursor: crosshair;
+  box-shadow: 0 2px 16px rgba(0,0,0,.7);
+  image-rendering: pixelated;
+  z-index: 20;
+  transition: border-color .2s;
+}
+#minimap-canvas:hover { border-color: var(--gold); }
+#minimap-label {
+  position: absolute;
+  bottom: 10px; right: 10px;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 7px;
+  color: rgba(255,216,77,.5);
+  pointer-events: none;
+  z-index: 21;
+  transform: translateY(-100%) translateY(-4px) translateX(-6px);
+}
 #share-msg { font-size:15px; color:var(--green); min-height:18px; }
 </style>
 </head>
@@ -327,6 +350,8 @@ html, body {
   </div>
   <div id="canvas-wrap">
     <canvas id="canvas"></canvas>
+    <canvas id="minimap-canvas"></canvas>
+    <div id="minimap-label">MAP</div>
     <div id="warp-flash"></div>
     <div id="msg-box"><div id="msg-title"></div><div id="msg-text"></div></div>
   </div>
@@ -637,21 +662,145 @@ function render(){
     }
   }
 
-  // Player
+  // ── Player ────────────────────────────────────────────────────────────────
   const px=Math.floor(playerX*T-camX+T/2), py=Math.floor(playerY*T-camY+T/2);
-  const bob=T>=16?Math.sin(now/240)*1.5:0, pr=Math.max(3,T*.42);
+  const bob=T>=16?Math.sin(now/240)*1.5:0, pr=Math.max(4,T*.42);
+
+  // Pulsing beacon ring — makes player always visible from a distance
+  const beaconPulse = (Math.sin(now/400)+1)/2;  // 0→1→0
+  const beaconR = pr + 4 + beaconPulse*8;
+  ctx.beginPath();
+  ctx.arc(px,py,beaconR,0,Math.PI*2);
+  ctx.strokeStyle=`rgba(255,216,77,${0.6-beaconPulse*0.5})`;
+  ctx.lineWidth=2;
+  ctx.stroke();
+
+  // Shadow
   ctx.fillStyle='rgba(0,0,0,.3)';
   ctx.beginPath();ctx.ellipse(px,py+pr*.6,pr*.7,Math.max(2,pr*.25),0,0,Math.PI*2);ctx.fill();
+
+  // Body
   ctx.fillStyle='#ffd84d';
   ctx.beginPath();ctx.arc(px,py+bob,pr,0,Math.PI*2);ctx.fill();
-  ctx.strokeStyle='#a88820';ctx.lineWidth=1.5;ctx.stroke();
-  if(T>=16){
+  ctx.strokeStyle='#a88820';ctx.lineWidth=2;ctx.stroke();
+
+  // Eyes
+  if(T>=14){
     const er=Math.max(1.5,pr*.22);
     ctx.fillStyle='#1a1a2e';
     ctx.beginPath();ctx.arc(px-pr*.4,py-pr*.28+bob,er,0,Math.PI*2);ctx.fill();
     ctx.beginPath();ctx.arc(px+pr*.4,py-pr*.28+bob,er,0,Math.PI*2);ctx.fill();
   }
+
+  // ── Minimap ───────────────────────────────────────────────────────────────
+  renderMinimap(now);
 }
+
+// ── Minimap size: scales with viewport, capped sensibly ───────────────────────
+function minimapSize(){
+  const wrap=document.getElementById('canvas-wrap');
+  const vw=wrap.clientWidth, vh=wrap.clientHeight;
+  const w=Math.round(Math.max(100,Math.min(220,vw*0.22)));
+  const h=Math.round(w*(mapData.rows/mapData.cols));
+  return {w, h:Math.min(h,Math.round(vh*0.3))};
+}
+
+function renderMinimap(now){
+  const mc=document.getElementById('minimap-canvas');
+  const {w,h}=minimapSize();
+  if(mc.width!==w||mc.height!==h){ mc.width=w; mc.height=h; }
+  const ctx=mc.getContext('2d');
+  const g=mapData.grid;
+  const scx=w/mapData.cols, scy=h/mapData.rows;
+
+  // Background
+  ctx.fillStyle='rgba(8,8,20,0.92)';
+  ctx.fillRect(0,0,w,h);
+
+  // Tiles
+  for(let r=0;r<mapData.rows;r++){
+    for(let c=0;c<mapData.cols;c++){
+      const v=g[r][c];
+      if(v===EMPTY) continue;
+      let col;
+      if(v===WALL)       col='#3a2a18';
+      else if(v===START) col='#2a6e40';
+      else if(v===END)   col='#7a2830';
+      else if(v===ITEM)  col=collectedItems.has(`${r},${c}`)? '#333' : '#8a7a18';
+      else if(v===ENEMY) col='#7a1840';
+      else               col=warpColor(v-WARP);
+      ctx.fillStyle=col;
+      ctx.fillRect(
+        Math.floor(c*scx), Math.floor(r*scy),
+        Math.max(1,Math.ceil(scx)), Math.max(1,Math.ceil(scy))
+      );
+    }
+  }
+
+  // Viewport rectangle
+  const T=TILE, VW=document.getElementById('canvas').width, VH=document.getElementById('canvas').height;
+  ctx.strokeStyle='rgba(255,255,255,0.25)';
+  ctx.lineWidth=1;
+  ctx.strokeRect(
+    Math.floor(camX/T*scx), Math.floor(camY/T*scy),
+    Math.ceil(VW/T*scx), Math.ceil(VH/T*scy)
+  );
+
+  // Player dot — pulsing gold
+  const pulse=(Math.sin(now/350)+1)/2;
+  const dotR=Math.max(2.5, Math.min(5, w*0.03));
+  const dotX=playerX*scx+scx/2, dotY=playerY*scy+scy/2;
+
+  // Outer glow
+  ctx.beginPath();ctx.arc(dotX,dotY,dotR+2+pulse*2,0,Math.PI*2);
+  ctx.fillStyle=`rgba(255,216,77,${0.25+pulse*0.2})`;
+  ctx.fill();
+
+  // Inner dot
+  ctx.beginPath();ctx.arc(dotX,dotY,dotR,0,Math.PI*2);
+  ctx.fillStyle='#ffd84d';ctx.fill();
+  ctx.strokeStyle='#a88820';ctx.lineWidth=1;ctx.stroke();
+}
+
+// ── Minimap click → teleport camera (and optionally warp player) ──────────────
+document.getElementById('minimap-canvas').addEventListener('click', e=>{
+  if(!mapData) return;
+  const mc=document.getElementById('minimap-canvas');
+  const rect=mc.getBoundingClientRect();
+  const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+  const {w,h}=minimapSize();
+
+  // Map click coords → grid cell
+  const col=Math.floor((mx/w)*mapData.cols);
+  const row=Math.floor((my/h)*mapData.rows);
+  const c=Math.max(0,Math.min(mapData.cols-1,col));
+  const r=Math.max(0,Math.min(mapData.rows-1,row));
+
+  // Don't allow placing on walls
+  if(mapData.grid[r][c]===WALL) return;
+
+  // Warp the player there with a flash
+  flashWarp(()=>{
+    playerX=c; playerY=r;
+    updateHUD(); blocked=false;
+  });
+});
+
+// Prevent minimap touch from triggering canvas swipe
+document.getElementById('minimap-canvas').addEventListener('touchstart',e=>e.stopPropagation(),{passive:true});
+document.getElementById('minimap-canvas').addEventListener('touchend',e=>{
+  e.stopPropagation();
+  if(!mapData) return;
+  const mc=document.getElementById('minimap-canvas');
+  const rect=mc.getBoundingClientRect();
+  const mx=e.changedTouches[0].clientX-rect.left;
+  const my=e.changedTouches[0].clientY-rect.top;
+  const {w,h}=minimapSize();
+  const c=Math.max(0,Math.min(mapData.cols-1,Math.floor((mx/w)*mapData.cols)));
+  const r=Math.max(0,Math.min(mapData.rows-1,Math.floor((my/h)*mapData.rows)));
+  if(mapData.grid[r][c]===WALL) return;
+  flashWarp(()=>{ playerX=c; playerY=r; updateHUD(); blocked=false; });
+},{passive:true});
 
 function drawLabel(ctx,text,color,x,y,T){
   ctx.fillStyle=color;
