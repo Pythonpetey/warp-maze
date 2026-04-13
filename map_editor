@@ -24,6 +24,7 @@ Map library:
 import pygame
 import json
 import base64
+import zlib
 import sys
 import copy
 import os
@@ -340,8 +341,9 @@ class Editor:
         name = self.library[self.active_idx]["name"]
         data = {"name": name, "cols": COLS, "rows": ROWS,
                 "num_warps": self.num_warps, "grid": self.grid}
-        raw  = json.dumps(data, separators=(",",":"))
-        code = base64.urlsafe_b64encode(raw.encode()).decode()
+        raw        = json.dumps(data, separators=(",",":")).encode()
+        compressed = zlib.compress(raw, level=9)
+        code       = base64.urlsafe_b64encode(compressed).decode()
         self.share_code = code
 
         # Save code to a file named after the map
@@ -349,9 +351,9 @@ class Editor:
         fname = f"{safe}_code.txt" if safe else "map_code.txt"
         with open(fname, "w") as f:
             f.write(code)
-        self.flash(f"Code saved to {fname}")
+        self.flash(f"Code saved! ({len(code)} chars)  →  {fname}")
         print(f"\n{'='*55}")
-        print(f"  SHARE CODE for '{name}'  →  saved to {fname}")
+        print(f"  SHARE CODE for '{name}'  ({len(code)} chars)  →  {fname}")
         print(f"{'='*55}")
         print(code[:80] + ("…" if len(code)>80 else ""))
         print(f"{'='*55}\n")
