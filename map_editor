@@ -455,6 +455,16 @@ class Editor:
     def _upload_to_jsonbin(self, data):
         """Upload map data to jsonbin.io. Returns 8-char short code or None."""
         try:
+            import ssl
+            # Fix for Mac Python SSL certificate issue
+            ctx = ssl.create_default_context()
+            try:
+                import certifi
+                ctx = ssl.create_default_context(cafile=certifi.where())
+            except ImportError:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+
             payload = json.dumps(data, separators=(",",":")).encode()
             req = urllib.request.Request(
                 JSONBIN_URL,
@@ -466,7 +476,7 @@ class Editor:
                     "X-Bin-Private": "false",
                 }
             )
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
                 result = json.loads(resp.read())
             full_id = (result.get("metadata") or {}).get("id", "")
             return full_id[-8:] if len(full_id) >= 8 else None
