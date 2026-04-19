@@ -216,8 +216,37 @@ body {
 #msg-box.show { opacity: 1; }
 #msg-title { font-family: 'Press Start 2P', monospace; font-size: 8px; color: var(--gold); margin-bottom: 4px; }
 
-/* D-pad — touch only */
-#dpad-bar {
+/* D-pad hint — always visible bottom-left of canvas */
+#dpad-hint {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  display: grid;
+  grid-template-areas: ". u ." "l . r" ". d .";
+  gap: 3px;
+  opacity: 0.55;
+  pointer-events: none;
+  z-index: 15;
+  transition: opacity .3s;
+}
+#dpad-hint:hover { opacity: 0.85; }
+.dh {
+  width: 28px; height: 28px;
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,216,77,.35);
+  border-radius: 5px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: rgba(255,216,77,.8);
+}
+.dh-u{grid-area:u} .dh-d{grid-area:d} .dh-l{grid-area:l} .dh-r{grid-area:r}
+.dh-center {
+  grid-area: 2/2;
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 5px; color: rgba(255,216,77,.4);
+  text-align: center; line-height: 1.3;
+}
   flex-shrink: 0;
   display: none;
   align-items: center;
@@ -376,6 +405,14 @@ body {
   <canvas id="canvas"></canvas>
   <div id="warp-flash"></div>
   <div id="msg-box"><div id="msg-title"></div><div id="msg-text"></div></div>
+  <!-- Always-visible d-pad hint bottom-left -->
+  <div id="dpad-hint">
+    <div class="dh dh-u">▲</div>
+    <div class="dh dh-l">◀</div>
+    <div class="dh-center">MOVE</div>
+    <div class="dh dh-r">▶</div>
+    <div class="dh dh-d">▼</div>
+  </div>
   <!-- D-pad (touch devices only via CSS media query) -->
   <div id="dpad-bar">
     <div id="dpad">
@@ -553,16 +590,18 @@ async function loadCode(){
   document.getElementById('load-error').textContent='Loading…';
   try{
     let data=null;
-    // Short code (8 hex chars)?
+    // Short code (8 hex chars) — try cloud first
     if(/^[0-9a-f]{8}$/i.test(raw)){
       data=await loadFromCloud(raw);
     }
-    // Fall back to long compressed code
+    // Long compressed code or cloud failed — decode directly
     if(!data) data=decodeMap(raw);
+    if(!data) throw new Error('Could not decode map');
     initMap(data,raw);
     document.getElementById('load-error').textContent='';
   }catch(e){
-    document.getElementById('load-error').textContent='Invalid code — check you copied it fully.';
+    console.error('Load error:',e);
+    document.getElementById('load-error').textContent='Could not load map — check the code is complete.';
   }
 }
 
@@ -1077,13 +1116,19 @@ function nativeShare(){
 edInit();
 renderSavedList();
 
-// Auto-load from URL hash
+// Auto-load from URL hash — decode directly, don't go via the input field
 window.addEventListener('load',()=>{
   const hash=location.hash.slice(1);
-  if(hash){
-    document.getElementById('code-input').value=hash;
-    loadCode();
-  }
+  if(!hash) return;
+  // Try to decode directly first
+  try{
+    const data=decodeMap(hash);
+    initMap(data, hash);
+    return;
+  } catch(e){}
+  // If that fails, put it in the input box for the user to try manually
+  document.getElementById('code-input').value=hash;
+  document.getElementById('load-error').textContent='Paste code and click PLAY';
 });
 </script>
 </body>
