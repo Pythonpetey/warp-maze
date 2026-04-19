@@ -1,0 +1,49 @@
+"""
+migrate_maps.py  —  run this ONCE to fix maps.json after the LAVA update.
+
+Before the update: WARP started at 6  (warp pair 0 = tile value 6, pair 1 = 7, etc.)
+After the update:  LAVA = 6, WARP starts at 7
+
+This script adds 1 to every tile value >= 6 so all warp tiles shift up correctly.
+Run it from the same folder as maps.json, then restart the editor.
+"""
+
+import json, os, copy, shutil
+
+MAPS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maps.json")
+
+def migrate():
+    if not os.path.exists(MAPS_FILE):
+        print("maps.json not found — nothing to do.")
+        return
+
+    # Back up first
+    backup = MAPS_FILE + ".backup"
+    shutil.copy2(MAPS_FILE, backup)
+    print(f"Backed up original to: {backup}")
+
+    with open(MAPS_FILE) as f:
+        data = json.load(f)
+
+    maps = data.get("maps", [])
+    changed = 0
+
+    for m in maps:
+        grid = m.get("grid", [])
+        for r in range(len(grid)):
+            for c in range(len(grid[r])):
+                v = grid[r][c]
+                if v >= 6:          # old WARP tiles — shift up by 1
+                    grid[r][c] = v + 1
+                    changed += 1
+        print(f"  '{m['name']}': {changed} tiles migrated")
+        changed = 0
+
+    with open(MAPS_FILE, "w") as f:
+        json.dump(data, f)
+
+    print("\nDone! maps.json has been updated.")
+    print("You can delete migrate_maps.py and the .backup file once you're happy.")
+
+if __name__ == "__main__":
+    migrate()
