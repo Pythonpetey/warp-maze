@@ -28,6 +28,9 @@ import zlib
 import sys
 import copy
 import os
+import urllib.request
+import urllib.error
+import threading
 
 # ── Map dimensions ──────────────────────────────────────────────────────────
 COLS = 160
@@ -53,7 +56,8 @@ START = 2
 END   = 3
 ITEM  = 4
 ENEMY = 5
-WARP  = 6
+LAVA  = 6
+WARP  = 7   # tile value = WARP + pair_index (unlimited pairs)
 
 # ── Colours ─────────────────────────────────────────────────────────────────
 BG         = (20,  20,  35)
@@ -75,10 +79,20 @@ TILE_COLORS = {
     EMPTY: (22, 22, 38), WALL: (55, 44, 30),
     START: (30, 140, 60), END: (160, 50, 40),
     ITEM: (180, 160, 20), ENEMY: (160, 40, 80),
+    LAVA: (200, 60, 10),
 }
-TILE_LABELS = {WALL:"Wall", START:"Start", END:"Exit", ITEM:"Item", ENEMY:"Enemy"}
+TILE_LABELS = {WALL:"Wall", START:"Start", END:"Exit", ITEM:"Item", ENEMY:"Enemy", LAVA:"Lava"}
 
-SAVE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maps.json")
+SAVE_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maps.json")
+CONFIG_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+# Default site URL — change this to your GitHub Pages URL
+DEFAULT_SITE_URL = "https://pythonpetey.github.io/warp-maze/"
+
+# Jsonbin.io — paste your Access Key here to enable short codes
+# Sign up free at https://jsonbin.io → API Keys → Create Access Key
+DEFAULT_JSONBIN_KEY = ""
+JSONBIN_URL = "https://api.jsonbin.io/v3/b"
 
 
 def clamp(v, lo, hi): return max(lo, min(hi, v))
@@ -116,11 +130,15 @@ class Editor:
         self.font_med = pygame.font.SysFont("monospace", 12, bold=True)
         self.font_lg  = pygame.font.SysFont("monospace", 13, bold=True)
 
+        # ── Site URL config ──────────────────────────────────────────────────
+        self.site_url    = self._load_site_url()
+        self.jsonbin_key = self._load_jsonbin_key()
+
         # ── Map library ──────────────────────────────────────────────────────
-        self.library      = []      # list of map dicts
-        self.active_idx   = 0       # which map is open
-        self.lib_scroll   = 0       # pixel scroll of library list
-        self.lib_renaming = -1      # index being renamed (-1 = none)
+        self.library      = []
+        self.active_idx   = 0
+        self.lib_scroll   = 0
+        self.lib_renaming = -1
         self.rename_buf   = ""
 
         self.load_library()
@@ -150,12 +168,55 @@ class Editor:
         self.LIB_ROW_H   = 30
         self.lib_area_h  = 0
 
+        # ── Share dialog ──────────────────────────────────────────────────────
+        self.share_dialog_open = False
+        self.share_full_url    = ""
+        self.share_short_code  = ""       # 8-char short code if jsonbin succeeded
+        self.share_uploading   = False    # True while upload is in progress
+        self.url_editing       = False
+        self.key_editing       = False    # typing in the jsonbin key field
+        self.url_buf           = self.site_url
+        self.key_buf           = self.jsonbin_key
+
         # ── Camera ───────────────────────────────────────────────────────────
         self.tile_size = TILE_DEF
         self.cam_x = 0.0; self.cam_y = 0.0
         self.keys_held = set()
         self.panning = False
         self.pan_start = (0,0); self.cam_start = (0.0,0.0)
+
+    # ── Config: site URL + jsonbin key ──────────────────────────────────────
+    def _load_config(self):
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    def _save_config(self, **kwargs):
+        cfg = self._load_config()
+        cfg.update(kwargs)
+        try:
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(cfg, f)
+        except Exception:
+            pass
+
+    def _load_site_url(self):
+        return self._load_config().get("site_url", DEFAULT_SITE_URL)
+
+    def _load_jsonbin_key(self):
+        return self._load_config().get("jsonbin_key", DEFAULT_JSONBIN_KEY)
+
+    def _save_site_url(self, url):
+        self.site_url = url.strip().rstrip("/") + "/"
+        self._save_config(site_url=self.site_url)
+
+    def _save_jsonbin_key(self, key):
+        self.jsonbin_key = key.strip()
+        self._save_config(jsonbin_key=self.jsonbin_key)
 
     # ── Library persistence ──────────────────────────────────────────────────
     def load_library(self):
@@ -343,23 +404,180 @@ class Editor:
                 "num_warps": self.num_warps, "grid": self.grid}
         raw        = json.dumps(data, separators=(",",":")).encode()
         compressed = zlib.compress(raw, level=9)
-        code       = base64.urlsafe_b64encode(compressed).decode()
-        self.share_code = code
+        long_code  = base64.urlsafe_b64encode(compressed).decode()
+        self.share_code       = long_code
+        self.share_short_code = ""
 
-        # Save code to a file named after the map
-        safe = "".join(c for c in name if c.isalnum() or c in " _-").strip().replace(" ","_")
-        fname = f"{safe}_code.txt" if safe else "map_code.txt"
-        with open(fname, "w") as f:
-            f.write(code)
-        self.flash(f"Code saved! ({len(code)} chars)  →  {fname}")
-        print(f"\n{'='*55}")
-        print(f"  SHARE CODE for '{name}'  ({len(code)} chars)  →  {fname}")
-        print(f"{'='*55}")
-        print(code[:80] + ("…" if len(code)>80 else ""))
-        print(f"{'='*55}\n")
+        base_url = self.site_url.rstrip("/") + "/"
+        self.share_full_url = f"{base_url}#{long_code}"
+
+        # Open dialog immediately with long code — update it if short code arrives
+        self.share_dialog_open = True
+        self.share_uploading   = True
+        self.url_editing       = False
+        self.key_editing       = False
+        self.url_buf           = self.site_url
+        self.key_buf           = self.jsonbin_key
+
+        # Save long-code URL to file right away
+        safe  = "".join(c for c in name if c.isalnum() or c in " _-").strip().replace(" ","_")
+        self.share_fname = f"{safe}_code.txt" if safe else "map_code.txt"
+
+        if self.jsonbin_key:
+            # Upload in background thread so UI stays responsive
+            def upload():
+                short = self._upload_to_jsonbin(data)
+                if short:
+                    self.share_short_code = short
+                    self.share_full_url   = f"{base_url}#{short}"
+                self.share_uploading = False
+                # Save whichever URL we ended up with
+                with open(self.share_fname, "w") as f:
+                    f.write(self.share_full_url)
+                print(f"\n{'='*60}")
+                print(f"  SHARE LINK for '{name}'")
+                if short:
+                    print(f"  Short code:  {short}")
+                print(f"  Full link:   {self.share_full_url}")
+                print(f"  Saved to:    {self.share_fname}")
+                print(f"{'='*60}\n")
+            threading.Thread(target=upload, daemon=True).start()
+        else:
+            self.share_uploading = False
+            with open(self.share_fname, "w") as f:
+                f.write(self.share_full_url)
+            print(f"\n{'='*60}")
+            print(f"  SHARE LINK for '{name}'  (no API key — long code)")
+            print(f"  {self.share_full_url}")
+            print(f"  Tip: add a jsonbin Access Key to get short 8-char codes!")
+            print(f"{'='*60}\n")
+
+    def _upload_to_jsonbin(self, data):
+        """Upload map data to jsonbin.io. Returns 8-char short code or None."""
+        try:
+            payload = json.dumps(data, separators=(",",":")).encode()
+            req = urllib.request.Request(
+                JSONBIN_URL,
+                data=payload,
+                method="POST",
+                headers={
+                    "Content-Type":  "application/json",
+                    "X-Master-Key":  self.jsonbin_key,
+                    "X-Bin-Private": "false",
+                }
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read())
+            full_id = (result.get("metadata") or {}).get("id", "")
+            return full_id[-8:] if len(full_id) >= 8 else None
+        except Exception as e:
+            print(f"  Jsonbin upload failed: {e}")
+            return None
 
     def flash(self, msg):
         self.msg = msg; self.msg_timer = 200
+
+    # ── Draw: share dialog ────────────────────────────────────────────────────
+    def draw_share_dialog(self):
+        overlay = pygame.Surface((WIN_W, WIN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        self.screen.blit(overlay, (0, 0))
+
+        DW, DH = 760, 340
+        dx = (WIN_W - DW) // 2
+        dy = (WIN_H - DH) // 2
+        pygame.draw.rect(self.screen, (14, 14, 28), (dx, dy, DW, DH), border_radius=10)
+        pygame.draw.rect(self.screen, HIGHLIGHT,    (dx, dy, DW, DH), 2, border_radius=10)
+
+        mx2, my2 = pygame.mouse.get_pos()
+        y = dy + 14
+        t = self.font_lg.render("SHARE MAP", True, HIGHLIGHT)
+        self.screen.blit(t, t.get_rect(centerx=dx+DW//2, y=y)); y += 26
+
+        # ── Short code row ────────────────────────────────────────────────────
+        if self.share_uploading:
+            dots = "." * (1 + (pygame.time.get_ticks() // 400) % 3)
+            t = self.font_med.render(f"Uploading{dots}  (getting short code)", True, (180, 180, 100))
+            self.screen.blit(t, t.get_rect(centerx=dx+DW//2, y=y)); y += 22
+        elif self.share_short_code:
+            t = self.font_sm.render("Short code  (paste this into the game):", True, (140, 140, 180))
+            self.screen.blit(t, (dx+16, y)); y += 14
+            code_r = pygame.Rect(dx+16, y, DW-32, 28)
+            pygame.draw.rect(self.screen, (8, 8, 20), code_r)
+            pygame.draw.rect(self.screen, (60, 200, 80), code_r, 2)
+            ct = self.font_lg.render(self.share_short_code, True, (100, 255, 120))
+            self.screen.blit(ct, ct.get_rect(center=code_r.center))
+            self.dialog_code_rect = code_r
+            y += 34
+        else:
+            t = self.font_sm.render("No API key set — using long code  (see below)", True, (160, 140, 60))
+            self.screen.blit(t, (dx+16, y)); y += 18
+
+        # ── Site URL field ────────────────────────────────────────────────────
+        t = self.font_sm.render("Site URL  (click to edit):", True, (140, 140, 180))
+        self.screen.blit(t, (dx+16, y)); y += 13
+        url_r = pygame.Rect(dx+16, y, DW-32, 20)
+        url_bg = (20, 20, 50) if self.url_editing else (16, 16, 38)
+        pygame.draw.rect(self.screen, url_bg, url_r)
+        pygame.draw.rect(self.screen, HIGHLIGHT if self.url_editing else (50, 50, 90), url_r, 1)
+        disp = (self.url_buf + "|") if self.url_editing else self.site_url
+        t = self.font_sm.render(disp[:92], True, (180, 220, 255) if self.url_editing else (100, 140, 200))
+        self.screen.blit(t, (url_r.x+4, url_r.y+4))
+        self.dialog_url_rect = url_r; y += 26
+
+        # ── Jsonbin key field ─────────────────────────────────────────────────
+        t = self.font_sm.render("Jsonbin Access Key  (click to edit — enables short codes):", True, (140, 140, 180))
+        self.screen.blit(t, (dx+16, y)); y += 13
+        key_r = pygame.Rect(dx+16, y, DW-32, 20)
+        key_bg = (20, 20, 50) if self.key_editing else (16, 16, 38)
+        pygame.draw.rect(self.screen, key_bg, key_r)
+        pygame.draw.rect(self.screen, HIGHLIGHT if self.key_editing else (50, 50, 90), key_r, 1)
+        key_disp = (self.key_buf + "|") if self.key_editing else (
+            self.jsonbin_key[:12] + "…" if len(self.jsonbin_key) > 12 else
+            (self.jsonbin_key or "— not set —"))
+        key_col = (180, 220, 255) if self.key_editing else ((100, 200, 140) if self.jsonbin_key else (120, 100, 80))
+        t = self.font_sm.render(key_disp[:92], True, key_col)
+        self.screen.blit(t, (key_r.x+4, key_r.y+4))
+        self.dialog_key_rect = key_r; y += 26
+
+        # ── Full URL display ──────────────────────────────────────────────────
+        t = self.font_sm.render("Full link:", True, (140, 140, 180))
+        self.screen.blit(t, (dx+16, y)); y += 13
+        link_r = pygame.Rect(dx+16, y, DW-32, 38)
+        pygame.draw.rect(self.screen, (8, 8, 20), link_r)
+        pygame.draw.rect(self.screen, (50, 100, 50), link_r, 1)
+        url = self.share_full_url
+        # Split into two lines around the # symbol
+        split = url.find('#')
+        if split > 0 and split < len(url)-1:
+            line1, line2 = url[:split+1], url[split+1:split+70]
+            if len(url)-split > 70: line2 += "…"
+        else:
+            mid = min(70, len(url)//2)
+            line1, line2 = url[:mid], url[mid:mid+70]
+        t1 = self.font_sm.render(line1, True, (90, 200, 110))
+        t2 = self.font_sm.render(line2, True, (90, 200, 110))
+        self.screen.blit(t1, (link_r.x+5, link_r.y+4))
+        self.screen.blit(t2, (link_r.x+5, link_r.y+20))
+        self.dialog_link_rect = link_r; y += 44
+
+        # ── Buttons ───────────────────────────────────────────────────────────
+        self.dialog_btns = {}
+        bw, gap = 150, 12
+        btns = [("COPY CODE",       (40,120,55)),
+                ("COPY LINK",       (40,60,130)),
+                ("OPEN IN BROWSER", (60,50,100)),
+                ("CLOSE",           (100,40,40))]
+        total = len(btns)*bw + (len(btns)-1)*gap
+        bx = dx + (DW-total)//2
+        for label, color in btns:
+            r = pygame.Rect(bx, y, bw, 26)
+            bg = BTN_HOVER if r.collidepoint(mx2, my2) else color
+            pygame.draw.rect(self.screen, bg, r, border_radius=4)
+            t = self.font_med.render(label, True, (220, 220, 255))
+            self.screen.blit(t, t.get_rect(center=r.center))
+            self.dialog_btns[label] = r
+            bx += bw + gap
 
     # ── Draw: grid ───────────────────────────────────────────────────────────
     def draw_grid(self):
@@ -377,6 +595,7 @@ class Editor:
                 elif val == END:   color = TILE_COLORS[END]
                 elif val == ITEM:  color = TILE_COLORS[ITEM]
                 elif val == ENEMY: color = TILE_COLORS[ENEMY]
+                elif val == LAVA:  color = TILE_COLORS[LAVA]
                 else:              color = warp_color(val-WARP)
                 rect = pygame.Rect(sx, sy, T-gap, T-gap)
                 pygame.draw.rect(self.screen, color, rect)
@@ -385,9 +604,11 @@ class Editor:
                     elif val==END:   lbl,fc="E",(255,180,180)
                     elif val==ITEM:  lbl,fc="*",(255,240,100)
                     elif val==ENEMY: lbl,fc="!",(255,150,180)
-                    else:            lbl,fc=str(val-WARP+1),(255,255,255)
-                    t = self.font_sm.render(lbl, True, fc)
-                    self.screen.blit(t, t.get_rect(center=rect.center))
+                    elif val==LAVA:  lbl,fc="~",(255,200,100)
+                    else:            lbl,fc=None,None   # no number on warps
+                    if lbl:
+                        t = self.font_sm.render(lbl, True, fc)
+                        self.screen.blit(t, t.get_rect(center=rect.center))
         if T >= 8:
             for c in range(c0, c1+1):
                 sx = int(c*T-self.cam_x)
@@ -410,6 +631,7 @@ class Editor:
                 elif v==END:   col=(200,60,50)
                 elif v==ITEM:  col=(200,180,30)
                 elif v==ENEMY: col=(200,50,90)
+                elif v==LAVA:  col=(220,70,10)
                 else:          col=warp_color(v-WARP)
                 mr = pygame.Rect(int(c*scx),int(r*scy),max(1,int(scx)+1),max(1,int(scy)+1))
                 pygame.draw.rect(surf, col, mr)
@@ -528,7 +750,7 @@ class Editor:
         t = self.font_lg.render("TILE PALETTE", True, HIGHLIGHT)
         self.screen.blit(t, (px+8, y)); y += 20
 
-        for tid in [WALL, START, END, ITEM, ENEMY]:
+        for tid in [WALL, START, END, ITEM, ENEMY, LAVA]:
             sel  = (self.sel_tile == tid)
             rect = pygame.Rect(px+6, y, PANEL_W-12, 24)
             bg   = BTN_ACT if sel else (BTN_HOVER if rect.collidepoint(mx2,my2) else BTN_NORM)
@@ -674,7 +896,7 @@ class Editor:
         y += 20 + self.lib_area_h + 4 + 6
         if self.lib_renaming >= 0: y += 14
         y += 20  # palette header
-        for tid in [WALL, START, END, ITEM, ENEMY]:
+        for tid in [WALL, START, END, ITEM, ENEMY, LAVA]:
             if pygame.Rect(px+6, y, PANEL_W-12, 24).collidepoint(mx,my):
                 self.sel_tile = tid; return
             y += 28
@@ -712,6 +934,38 @@ class Editor:
                 elif event.type == pygame.KEYDOWN:
                     self.keys_held.add(event.key)
 
+                    # Share dialog field editing
+                    if self.share_dialog_open:
+                        if self.url_editing:
+                            if event.key == pygame.K_RETURN:
+                                self._save_site_url(self.url_buf)
+                                self.url_editing = False
+                                base = self.site_url.rstrip("/") + "/"
+                                code = self.share_short_code or self.share_code
+                                self.share_full_url = f"{base}#{code}"
+                            elif event.key == pygame.K_ESCAPE:
+                                self.url_editing = False; self.url_buf = self.site_url
+                            elif event.key == pygame.K_BACKSPACE:
+                                self.url_buf = self.url_buf[:-1]
+                            elif event.unicode:
+                                self.url_buf += event.unicode
+                            continue
+                        if self.key_editing:
+                            if event.key == pygame.K_RETURN:
+                                self._save_jsonbin_key(self.key_buf)
+                                self.key_editing = False
+                                self.flash("API key saved — click SHARE CODE again!")
+                            elif event.key == pygame.K_ESCAPE:
+                                self.key_editing = False; self.key_buf = self.jsonbin_key
+                            elif event.key == pygame.K_BACKSPACE:
+                                self.key_buf = self.key_buf[:-1]
+                            elif event.unicode:
+                                self.key_buf += event.unicode
+                            continue
+                        if event.key == pygame.K_ESCAPE:
+                            self.share_dialog_open = False
+                        continue
+
                     # Rename input
                     if self.lib_renaming >= 0:
                         if event.key == pygame.K_RETURN:  self.finish_rename()
@@ -720,7 +974,7 @@ class Editor:
                             self.rename_buf = self.rename_buf[:-1]
                         elif event.unicode and len(self.rename_buf) < 40:
                             self.rename_buf += event.unicode
-                        continue   # swallow all keys during rename
+                        continue
 
                     if event.key == pygame.K_z and (event.mod & pygame.KMOD_CTRL):
                         self.undo()
@@ -731,6 +985,7 @@ class Editor:
                     self.keys_held.discard(event.key)
 
                 elif event.type == pygame.MOUSEWHEEL:
+                    if self.share_dialog_open: continue
                     mx, my = pygame.mouse.get_pos()
                     if mx < VIEW_W:
                         old_t = self.tile_size
@@ -744,6 +999,34 @@ class Editor:
 
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     mx, my = event.pos
+
+                    # Share dialog clicks
+                    if self.share_dialog_open:
+                        if hasattr(self, 'dialog_url_rect') and self.dialog_url_rect.collidepoint(mx, my):
+                            self.url_editing = True; self.key_editing = False
+                            self.url_buf = self.site_url
+                        elif hasattr(self, 'dialog_key_rect') and self.dialog_key_rect.collidepoint(mx, my):
+                            self.key_editing = True; self.url_editing = False
+                            self.key_buf = self.jsonbin_key
+                        elif hasattr(self, 'dialog_btns'):
+                            def _copy(text):
+                                try:
+                                    pygame.scrap.init()
+                                    pygame.scrap.put(pygame.SCRAP_TEXT, text.encode())
+                                    self.flash("Copied to clipboard!")
+                                except Exception:
+                                    self.flash("Copy failed — see PyCharm console")
+                            if self.dialog_btns.get("COPY CODE", pygame.Rect(0,0,0,0)).collidepoint(mx,my):
+                                code = self.share_short_code or self.share_code
+                                _copy(code)
+                            elif self.dialog_btns.get("COPY LINK", pygame.Rect(0,0,0,0)).collidepoint(mx,my):
+                                _copy(self.share_full_url)
+                            elif self.dialog_btns.get("OPEN IN BROWSER", pygame.Rect(0,0,0,0)).collidepoint(mx,my):
+                                import webbrowser; webbrowser.open(self.share_full_url)
+                            elif self.dialog_btns.get("CLOSE", pygame.Rect(0,0,0,0)).collidepoint(mx,my):
+                                self.share_dialog_open = False
+                        continue
+
                     if mx >= VIEW_W:
                         self.handle_panel_click(mx, my)
                     elif event.button == 2:
@@ -786,6 +1069,8 @@ class Editor:
             self.screen.fill(BG)
             self.draw_grid()
             self.draw_panel()
+            if self.share_dialog_open:
+                self.draw_share_dialog()
             pygame.display.flip()
 
 
