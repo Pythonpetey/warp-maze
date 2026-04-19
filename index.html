@@ -1,1078 +1,1090 @@
-"""
-Warp Maze - Map Editor  (multi-map edition)
-Run this in PyCharm to build your maps, then share them via map_player.html.
-
-Install:  pip install pygame
-
-Controls:
-  Left-click / drag    – place tile
-  Right-click / drag   – erase tile
-  Middle-click / drag  – pan the map
-  WASD / Arrow keys    – scroll the map
-  Scroll wheel         – zoom in/out (over grid) / scroll lists (over panel)
-  Ctrl+Z               – undo
-  Ctrl+S               – save current map
-
-Map library:
-  Your maps are saved automatically to maps.json next to this file.
-  Use the MAPS panel at the top of the sidebar to switch between maps,
-  create new ones, duplicate, rename, or delete them.
-  Each map has its own name, grid, and warp pairs.
-  Click SHARE CODE on any map to generate its shareable link code.
-"""
-
-import pygame
-import json
-import base64
-import zlib
-import sys
-import copy
-import os
-import urllib.request
-import urllib.error
-import threading
-
-# ── Map dimensions ──────────────────────────────────────────────────────────
-COLS = 160
-ROWS = 120
-
-# ── Tile rendering ──────────────────────────────────────────────────────────
-TILE_MIN = 6
-TILE_MAX = 32
-TILE_DEF = 16
-
-# ── Window ──────────────────────────────────────────────────────────────────
-PANEL_W    = 260
-VIEW_W     = 960
-VIEW_H     = 700
-WIN_W      = VIEW_W + PANEL_W
-WIN_H      = VIEW_H
-SCROLL_SPD = 12
-
-# ── Tile IDs ────────────────────────────────────────────────────────────────
-EMPTY = 0
-WALL  = 1
-START = 2
-END   = 3
-ITEM  = 4
-ENEMY = 5
-LAVA  = 6
-WARP  = 7   # tile value = WARP + pair_index (unlimited pairs)
-
-# ── Colours ─────────────────────────────────────────────────────────────────
-BG         = (20,  20,  35)
-GRID_LINE  = (35,  35,  55)
-PANEL_BG   = (14,  14,  25)
-PANEL_LINE = (50,  50,  80)
-TEXT_COL   = (200, 200, 230)
-HIGHLIGHT  = (255, 220,  60)
-BTN_NORM   = (35,  35,  58)
-BTN_HOVER  = (55,  55,  90)
-BTN_ACT    = (80,  60, 160)
-BTN_DEL    = (110,  30,  30)
-BTN_ADD    = (30,  100,  50)
-BTN_GREEN  = (40,  130,  60)
-MAP_ACTIVE = (50,  40,  100)
-MAP_HOVER  = (40,  40,   75)
-
-TILE_COLORS = {
-    EMPTY: (22, 22, 38), WALL: (55, 44, 30),
-    START: (30, 140, 60), END: (160, 50, 40),
-    ITEM: (180, 160, 20), ENEMY: (160, 40, 80),
-    LAVA: (200, 60, 10),
+<!DOCTYPE html>
+<!--
+╔══════════════════════════════════════════════════════════════════╗
+║              ⚡  WARP MAZE — DEPLOYMENT GUIDE  ⚡               ║
+╠══════════════════════════════════════════════════════════════════╣
+║  HOSTING: GitHub Pages (free, 5 min)                             ║
+║  1. github.com → New repo named  warp-maze  (Public)             ║
+║  2. Upload this file renamed as  index.html                      ║
+║  3. Settings → Pages → Branch: main / (root) → Save             ║
+║  4. Visit https://YOUR-NAME.github.io/warp-maze/                 ║
+║                                                                  ║
+║  SHORT CODES: Maps are stored on jsonbin.io (free).              ║
+║  Each saved map gets a short 8-char ID, e.g.  a3f9bc12           ║
+║  Share link looks like:  https://your-site/#a3f9bc12             ║
+║  Anyone with the code can play, and can also save their own.     ║
+║                                                                  ║
+║  JSONBIN SETUP (one-time, free):                                 ║
+║  1. Sign up at https://jsonbin.io                                ║
+║  2. Go to API Keys → Create API Key                              ║
+║  3. Paste your key into JSONBIN_KEY below                        ║
+║  Without a key, maps still work via long URL hash codes.         ║
+╚══════════════════════════════════════════════════════════════════╝
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Warp Maze"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="theme-color" content="#0d0d1a"/>
+<title>⚡ Warp Maze</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323:wght@400&display=swap" rel="stylesheet"/>
+<style>
+/* ── JSONBIN key — paste yours here ── */
+</style>
+<script>
+// ▼▼▼ PASTE YOUR JSONBIN.IO API KEY HERE (optional — enables short codes) ▼▼▼
+const JSONBIN_KEY = '';
+// ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+const JSONBIN_URL = 'https://api.jsonbin.io/v3/b';
+</script>
+<style>
+:root {
+  --bg:       #0d0d1a;
+  --panel:    #12122a;
+  --gold:     #ffd84d;
+  --gold-dim: #a88a20;
+  --teal:     #4dffd8;
+  --red:      #ff4d6d;
+  --green:    #4dff91;
+  --text:     #c8c8e8;
+  --sat: env(safe-area-inset-top,    0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left,   0px);
+  --sar: env(safe-area-inset-right,  0px);
 }
-TILE_LABELS = {WALL:"Wall", START:"Start", END:"Exit", ITEM:"Item", ENEMY:"Enemy", LAVA:"Lava"}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-SAVE_FILE    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maps.json")
-CONFIG_FILE  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+/* Fill the whole viewport always — no scrolling, no overflow */
+html { height: 100%; }
+body {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'VT323', monospace;
+  overscroll-behavior: none;
+  touch-action: none;
+}
 
-# Default site URL — change this to your GitHub Pages URL
-DEFAULT_SITE_URL = "https://pythonpetey.github.io/warp-maze/"
+/* ── Tab bar ── */
+#tab-bar {
+  display: none; /* shown only on game/editor screens */
+  flex-shrink: 0;
+  background: rgba(8,8,20,.98);
+  border-bottom: 1px solid #2a2a4a;
+  padding: calc(var(--sat) + 4px) calc(var(--sar) + 8px) 4px calc(var(--sal) + 8px);
+  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+}
+#tab-bar.show { display: flex; }
+.tab-btn {
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(6px, 1.6vw, 9px);
+  padding: 6px 10px;
+  border: 1.5px solid currentColor;
+  border-radius: 5px;
+  cursor: pointer;
+  background: transparent;
+  color: #666;
+  transition: color .15s, border-color .15s;
+  min-height: 34px;
+  -webkit-tap-highlight-color: transparent;
+}
+.tab-btn.active { color: var(--gold); }
+.tab-btn:active { filter: brightness(1.4); }
+.tab-hud {
+  display: flex; gap: 12px; align-items: center;
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(6px, 1.4vw, 8px);
+}
+.tab-hud .hi { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.tab-hud .hl { color: #444; font-size: .75em; }
+.tab-hud .hv { color: var(--gold); }
+#hud-name { color: var(--teal); max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-# Jsonbin.io — paste your Access Key here to enable short codes
-# Sign up free at https://jsonbin.io → API Keys → Create Access Key
-DEFAULT_JSONBIN_KEY = ""
-JSONBIN_URL = "https://api.jsonbin.io/v3/b"
+/* ── Pages ── */
+.page {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+.page.active { display: flex; }
 
+/* ── Home/load page ── */
+#page-home {
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: var(--bg);
+  padding: calc(var(--sat)+16px) 16px calc(var(--sab)+16px);
+}
+#page-home::before {
+  content: '';
+  position: fixed; inset: 0;
+  background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(80,40,160,.18) 0%, transparent 70%);
+  pointer-events: none;
+}
+.home-title {
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(11px, 3.5vw, 20px);
+  color: var(--gold);
+  text-shadow: 0 0 20px rgba(255,216,77,.5), 2px 2px 0 #000;
+  letter-spacing: 2px;
+  text-align: center; z-index: 1;
+}
+.home-sub { font-size: 18px; color: var(--gold-dim); z-index: 1; }
+.home-card {
+  background: var(--panel);
+  border: 2px solid var(--gold-dim);
+  border-radius: 12px;
+  padding: 20px;
+  width: min(460px, 94vw);
+  text-align: center;
+  z-index: 1;
+}
+.home-card p { font-size: 20px; color: var(--teal); margin-bottom: 10px; }
+#code-input {
+  width: 100%; background: #080810;
+  border: 1.5px solid var(--gold-dim); border-radius: 6px;
+  color: var(--teal); font-family: 'VT323', monospace;
+  font-size: 16px; padding: 10px; resize: none; height: 58px; margin-bottom: 12px;
+}
+.btn-row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.btn {
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(7px, 1.8vw, 10px);
+  padding: 10px 14px;
+  border: 2px solid currentColor; border-radius: 6px;
+  cursor: pointer; background: transparent;
+  transition: filter .1s, transform .08s;
+  min-height: 44px; min-width: 44px;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn:active { transform: scale(0.95); filter: brightness(1.4); }
+.btn-gold { color: var(--gold); }
+.btn-teal { color: var(--teal); }
+.btn-red  { color: var(--red);  }
+.load-error { color: var(--red); font-size: 14px; margin-top: 8px; min-height: 18px; }
 
-def clamp(v, lo, hi): return max(lo, min(hi, v))
+/* Saved codes list */
+#saved-list { margin-top: 14px; text-align: left; }
+#saved-list h4 { font-family: 'Press Start 2P', monospace; font-size: 8px; color: var(--gold-dim); margin-bottom: 8px; }
+.saved-item {
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(255,255,255,.04); border-radius: 5px;
+  padding: 6px 8px; margin-bottom: 5px; cursor: pointer;
+  border: 1px solid transparent; transition: border-color .1s;
+}
+.saved-item:hover, .saved-item:active { border-color: var(--gold-dim); }
+.saved-item .si-code { font-family: monospace; color: var(--teal); font-size: 14px; flex: 1; }
+.saved-item .si-name { color: var(--text); font-size: 16px; flex: 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.saved-item .si-del  { color: var(--red); font-size: 14px; padding: 2px 6px; cursor: pointer; flex-shrink: 0; }
 
-def warp_color(index):
-    hue = (index * 137.508) % 360
-    sat = 0.75 + 0.2 * ((index % 3) / 3)
-    val = 0.85 + 0.12 * ((index % 5) / 5)
-    h = hue / 60; i = int(h); f = h - i
-    p = val*(1-sat); q = val*(1-sat*f); t = val*(1-sat*(1-f))
-    rgb = [(val,t,p),(q,val,p),(p,val,t),(p,q,val),(t,p,val),(val,p,q)][i%6]
-    return tuple(int(x*255) for x in rgb)
+/* ── Game page ── */
+#page-game {
+  background: var(--bg);
+  position: relative;
+}
+/* Canvas fills the page exactly */
+#canvas {
+  display: block;
+  position: absolute; top: 0; left: 0;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+#warp-flash { position: absolute; inset: 0; background: white; opacity: 0; pointer-events: none; }
+#msg-box {
+  position: absolute;
+  bottom: 10px; left: 50%; transform: translateX(-50%);
+  background: rgba(14,14,26,.97);
+  border: 2px solid var(--gold); border-radius: 8px;
+  padding: 8px 16px;
+  width: min(300px, 88vw);
+  font-size: 18px; line-height: 1.4; text-align: center;
+  pointer-events: none; opacity: 0; transition: opacity .2s; z-index: 10;
+}
+#msg-box.show { opacity: 1; }
+#msg-title { font-family: 'Press Start 2P', monospace; font-size: 8px; color: var(--gold); margin-bottom: 4px; }
 
-def empty_map(name="New Map"):
-    return {
-        "name": name,
-        "grid": [[EMPTY]*COLS for _ in range(ROWS)],
-        "num_warps": 0,
-        "warp_counts": [],
+/* D-pad — touch only */
+#dpad-bar {
+  flex-shrink: 0;
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px calc(var(--sar)+10px) calc(var(--sab)+6px) calc(var(--sal)+10px);
+  background: rgba(8,8,20,.92);
+  border-top: 1px solid #2a2a4a;
+  gap: 8px;
+}
+@media (hover:none) and (pointer:coarse) { #dpad-bar { display: flex; } }
+#dpad { display: grid; grid-template-areas: ". u ." "l . r" ". d ."; gap: 3px; }
+.dp {
+  width: 54px; height: 54px;
+  background: rgba(255,255,255,.05); border: 1.5px solid rgba(255,216,77,.2);
+  border-radius: 8px; display: flex; align-items: center; justify-content: center;
+  font-size: 20px; color: var(--gold); cursor: pointer;
+  user-select: none; -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+}
+.dp:active, .dp.pressed { background: rgba(255,216,77,.18); border-color: var(--gold); }
+.dp-u{grid-area:u} .dp-d{grid-area:d} .dp-l{grid-area:l} .dp-r{grid-area:r}
+
+/* ── In-browser editor page ── */
+#page-editor {
+  flex-direction: row;
+  background: #0a0a18;
+  overflow: hidden;
+}
+#ed-canvas-wrap {
+  flex: 1; position: relative; overflow: hidden; touch-action: none; min-width: 0;
+}
+#ed-canvas { display: block; position: absolute; top:0; left:0; image-rendering: pixelated; cursor: crosshair; }
+#ed-panel {
+  width: 220px; flex-shrink: 0;
+  background: #0e0e1e;
+  border-left: 1px solid #2a2a4a;
+  display: flex; flex-direction: column;
+  overflow-y: auto;
+  padding: 8px 6px;
+  gap: 6px;
+}
+@media (max-width: 600px) {
+  #page-editor { flex-direction: column; }
+  #ed-panel { width: 100%; height: 180px; flex-direction: row; flex-wrap: wrap; overflow-x: auto; overflow-y: hidden; border-left: none; border-top: 1px solid #2a2a4a; gap: 4px; padding: 6px; }
+}
+.ep-title { font-family: 'Press Start 2P', monospace; font-size: 8px; color: var(--gold); margin-bottom: 2px; }
+.ep-btn {
+  font-family: 'Press Start 2P', monospace; font-size: 7px;
+  padding: 7px 6px; border-radius: 4px; cursor: pointer;
+  border: 1.5px solid transparent; background: #1a1a30; color: var(--text);
+  text-align: left; display: flex; align-items: center; gap: 6px;
+  -webkit-tap-highlight-color: transparent; white-space: nowrap;
+}
+.ep-btn:active { filter: brightness(1.4); }
+.ep-btn.active { border-color: var(--gold); color: var(--gold); background: #2a2040; }
+.ep-swatch { width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+.ep-sep { height: 1px; background: #2a2a4a; margin: 2px 0; }
+#ed-name-input {
+  width: 100%; background: #080810; border: 1px solid #444; border-radius: 4px;
+  color: var(--teal); font-family: 'VT323', monospace; font-size: 16px; padding: 4px 6px;
+}
+.ep-action {
+  font-family: 'Press Start 2P', monospace; font-size: 7px;
+  padding: 8px 6px; border-radius: 4px; cursor: pointer;
+  border: none; color: #dde; text-align: center;
+  -webkit-tap-highlight-color: transparent;
+}
+.ep-action:active { filter: brightness(1.3); }
+
+/* ── Win overlay ── */
+#win-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.88); z-index: 200;
+  flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+}
+#win-overlay.show { display: flex; }
+#win-overlay h2 {
+  font-family: 'Press Start 2P', monospace;
+  font-size: clamp(13px, 4vw, 26px); color: var(--gold);
+  text-shadow: 0 0 30px var(--gold), 2px 2px 0 #000;
+  animation: pulse 1s ease-in-out infinite alternate;
+  text-align: center; padding: 0 16px;
+}
+@keyframes pulse { from{filter:brightness(1)} to{filter:brightness(1.6)} }
+#win-stats { font-size: 22px; color: var(--teal); line-height: 2; text-align: center; }
+
+/* ── Share modal ── */
+#share-modal {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.88); z-index: 300;
+  align-items: center; justify-content: center; padding: 20px;
+}
+#share-modal.open { display: flex; }
+.share-card {
+  background: var(--panel); border: 2px solid var(--gold-dim);
+  border-radius: 12px; padding: 20px; width: min(420px, 92vw);
+  text-align: center; display: flex; flex-direction: column; gap: 12px;
+}
+.share-card h3 { font-family:'Press Start 2P',monospace; font-size:10px; color:var(--gold); }
+#share-code-box {
+  width: 100%; background: #080810; border: 1px solid var(--gold-dim);
+  border-radius: 6px; color: var(--teal); font-family: 'Press Start 2P', monospace;
+  font-size: clamp(10px,3vw,16px); padding: 14px; text-align: center;
+  letter-spacing: 2px; cursor: pointer;
+}
+#share-url-box {
+  width: 100%; background: #080810; border: 1px solid #444;
+  border-radius: 4px; color: #666; font-size: 11px; font-family: monospace;
+  padding: 8px; word-break: break-all; text-align: left; resize: none; max-height: 60px;
+  overflow-y: auto;
+}
+#share-msg { font-size:15px; color:var(--green); min-height:18px; }
+</style>
+</head>
+<body>
+
+<!-- ══ TAB BAR ═══════════════════════════════════════════════════════════ -->
+<div id="tab-bar">
+  <div style="display:flex;gap:5px">
+    <button class="tab-btn" onclick="goHome()">🏠</button>
+    <button class="tab-btn active" id="tab-play" onclick="showPage('game')">▶ PLAY</button>
+    <button class="tab-btn" id="tab-edit" onclick="showPage('editor')">✏️ MAKE MAP</button>
+  </div>
+  <div class="tab-hud" id="game-hud" style="display:none">
+    <div class="hi"><div class="hl">MAP</div><div id="hud-name">—</div></div>
+    <div class="hi"><div class="hl">STEPS</div><div class="hv" id="hud-steps">0</div></div>
+    <div class="hi"><div class="hl">ITEMS</div><div class="hv" id="hud-items">0/0</div></div>
+    <button class="tab-btn" onclick="recenter()" title="Find player" style="font-size:10px;padding:4px 8px;min-height:30px">⊙</button>
+    <button class="tab-btn" onclick="resetPlayer()" style="font-size:10px;padding:4px 8px;min-height:30px">↺</button>
+    <button class="tab-btn btn-gold" onclick="openShare()" style="font-size:10px;padding:4px 8px;min-height:30px">🔗</button>
+  </div>
+</div>
+
+<!-- ══ HOME PAGE ══════════════════════════════════════════════════════════ -->
+<div id="page-home" class="page active">
+  <div class="home-title">⚡ WARP MAZE ⚡</div>
+  <div class="home-sub">A warp tile maze puzzle</div>
+  <div class="home-card">
+    <p>Enter a code to play:</p>
+    <input id="code-input" type="text" placeholder="e.g.  a3f9bc12" autocomplete="off" autocorrect="off" spellcheck="false"
+      style="width:100%;background:#080810;border:1.5px solid var(--gold-dim);border-radius:6px;color:var(--teal);font-family:'Press Start 2P',monospace;font-size:clamp(11px,3vw,16px);padding:12px;letter-spacing:3px;text-align:center;margin-bottom:12px"/>
+    <div class="btn-row">
+      <button class="btn btn-gold" onclick="loadCode()">▶ PLAY</button>
+      <button class="btn btn-teal" onclick="loadDemo()">★ DEMO</button>
+      <button class="btn" style="color:#888" onclick="showPage('editor')">✏️ MAKE MAP</button>
+    </div>
+    <div id="load-error" class="load-error"></div>
+    <div id="saved-list" style="display:none">
+      <h4>YOUR SAVED MAPS</h4>
+      <div id="saved-items"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ GAME PAGE ══════════════════════════════════════════════════════════ -->
+<div id="page-game" class="page">
+  <canvas id="canvas"></canvas>
+  <div id="warp-flash"></div>
+  <div id="msg-box"><div id="msg-title"></div><div id="msg-text"></div></div>
+  <!-- D-pad (touch devices only via CSS media query) -->
+  <div id="dpad-bar">
+    <div id="dpad">
+      <div class="dp dp-u" id="dp-u">▲</div>
+      <div class="dp dp-l" id="dp-l">◀</div>
+      <div class="dp dp-r" id="dp-r">▶</div>
+      <div class="dp dp-d" id="dp-d">▼</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+      <button class="btn btn-gold" onclick="openShare()" style="font-size:7px;padding:8px">🔗 SHARE</button>
+      <button class="btn btn-teal" onclick="resetPlayer()" style="font-size:7px;padding:8px">↺ RESTART</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ EDITOR PAGE ════════════════════════════════════════════════════════ -->
+<div id="page-editor" class="page">
+  <div id="ed-canvas-wrap">
+    <canvas id="ed-canvas"></canvas>
+  </div>
+  <div id="ed-panel">
+    <div class="ep-title">MAP NAME</div>
+    <input id="ed-name-input" type="text" value="My Map" maxlength="40"/>
+    <div class="ep-sep"></div>
+    <div class="ep-title">TILES</div>
+    <button class="ep-btn active" id="ep-wall"  onclick="edSelTile(1)"><span class="ep-swatch" style="background:#3c2c18"></span>Wall</button>
+    <button class="ep-btn" id="ep-start" onclick="edSelTile(2)"><span class="ep-swatch" style="background:#1e8040"></span>Start</button>
+    <button class="ep-btn" id="ep-end"   onclick="edSelTile(3)"><span class="ep-swatch" style="background:#a03020"></span>Exit</button>
+    <button class="ep-btn" id="ep-item"  onclick="edSelTile(4)"><span class="ep-swatch" style="background:#a09010"></span>Item ★</button>
+    <button class="ep-btn" id="ep-enemy" onclick="edSelTile(5)"><span class="ep-swatch" style="background:#a02850"></span>Enemy !</button>
+    <button class="ep-btn" id="ep-lava"  onclick="edSelTile(6)"><span class="ep-swatch" style="background:#c83c0a"></span>Lava ☠</button>
+    <div class="ep-sep"></div>
+    <div class="ep-title">WARPS <button onclick="edAddWarp()" style="font-family:'Press Start 2P',monospace;font-size:7px;padding:3px 5px;background:#1a3a1a;border:1px solid #4dff91;color:#4dff91;border-radius:3px;cursor:pointer">+</button></div>
+    <div id="ep-warps"></div>
+    <div class="ep-sep"></div>
+    <div class="ep-title">TOOLS</div>
+    <button class="ep-btn" id="ep-erase" onclick="edSelTile(0)"><span class="ep-swatch" style="background:#111"></span>Erase</button>
+    <div class="ep-sep"></div>
+    <button class="ep-action" style="background:#1a3a1a" onclick="edSaveMap()">💾 SAVE &amp; GET CODE</button>
+    <button class="ep-action" style="background:#1a1a3a" onclick="edUndo()">↩ UNDO</button>
+    <button class="ep-action" style="background:#2a1010" onclick="edClear()">🗑 CLEAR</button>
+    <div id="ep-msg" style="font-size:13px;color:var(--teal);text-align:center;min-height:16px;padding:2px 0"></div>
+  </div>
+</div>
+
+<!-- ══ WIN OVERLAY ════════════════════════════════════════════════════════ -->
+<div id="win-overlay">
+  <h2>🏆 MAZE CLEARED! 🏆</h2>
+  <div id="win-stats"></div>
+  <div class="btn-row">
+    <button class="btn btn-gold" onclick="resetPlayer()">▶ AGAIN</button>
+    <button class="btn btn-teal" onclick="goHome()">← MENU</button>
+  </div>
+</div>
+
+<!-- ══ SHARE MODAL ════════════════════════════════════════════════════════ -->
+<div id="share-modal">
+  <div class="share-card">
+    <h3>🔗 SHARE THIS MAP</h3>
+    <p style="font-size:16px;color:var(--teal)">Give this code to anyone to play:</p>
+    <div id="share-code-box" onclick="copyCode()">—</div>
+    <p style="font-size:13px;color:#666">Or share the full link:</p>
+    <textarea id="share-url-box" readonly rows="2"></textarea>
+    <div class="btn-row">
+      <button class="btn btn-gold" onclick="copyCode()">📋 COPY CODE</button>
+      <button class="btn btn-teal" id="native-share-btn" onclick="nativeShare()" style="display:none">📤 SHARE</button>
+      <button class="btn btn-red"  onclick="closeShare()">✕ CLOSE</button>
+    </div>
+    <div id="share-msg"></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+// ═══════════════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════════════
+const EMPTY=0,WALL=1,START=2,END=3,ITEM=4,ENEMY=5,LAVA=6,WARP=7;
+const ED_COLS=40, ED_ROWS=30;  // editor grid size (lighter than 160x120 for browser)
+
+function warpColor(idx){
+  const hue=(idx*137.508)%360,s=0.75+0.2*((idx%3)/3),v=0.85+0.12*((idx%5)/5);
+  const h=hue/60,i=Math.floor(h),f=h-i,p=v*(1-s),q=v*(1-s*f),t=v*(1-s*(1-f));
+  const m=[[v,t,p],[q,v,p],[p,v,t],[p,q,v],[t,p,v],[v,p,q]][i%6];
+  return `rgb(${Math.round(m[0]*255)},${Math.round(m[1]*255)},${Math.round(m[2]*255)})`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SHORT CODE STORAGE  (jsonbin.io — falls back to long hash)
+// ═══════════════════════════════════════════════════════════════════
+async function saveToCloud(data){
+  if(!JSONBIN_KEY) return null;
+  try{
+    const r=await fetch(JSONBIN_URL,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-Master-Key':JSONBIN_KEY,'X-Bin-Private':'false'},
+      body:JSON.stringify(data)
+    });
+    const j=await r.json();
+    // Return just the last 8 chars of the bin ID as a short code
+    const fullId=j.metadata?.id||j.record?.id||'';
+    return fullId ? fullId.slice(-8) : null;
+  }catch(e){return null;}
+}
+
+async function loadFromCloud(shortCode){
+  if(!JSONBIN_KEY||shortCode.length!==8) return null;
+  // Search our bins for one ending with this code
+  try{
+    // Try direct lookup — jsonbin IDs are 24 chars, we store last 8
+    // We need to search; if user has bins list:
+    const r=await fetch(`${JSONBIN_URL}?meta=false`,{
+      headers:{'X-Master-Key':JSONBIN_KEY}
+    });
+    const bins=await r.json();
+    const match=bins.find?.(b=>(b.id||b.snippetMeta?.id||'').endsWith(shortCode));
+    if(!match) return null;
+    const fullId=match.id||match.snippetMeta?.id;
+    const r2=await fetch(`${JSONBIN_URL}/${fullId}/latest`,{headers:{'X-Master-Key':JSONBIN_KEY,'X-Bin-Meta':'false'}});
+    return await r2.json();
+  }catch(e){return null;}
+}
+
+// Local saved codes (stored in localStorage)
+const LS_KEY='warp_maze_saved';
+function getSaved(){ try{return JSON.parse(localStorage.getItem(LS_KEY)||'[]');}catch{return [];} }
+function addSaved(code,name){ const s=getSaved().filter(x=>x.code!==code); s.unshift({code,name,ts:Date.now()}); localStorage.setItem(LS_KEY,JSON.stringify(s.slice(0,20))); }
+function removeSaved(code){ localStorage.setItem(LS_KEY,JSON.stringify(getSaved().filter(x=>x.code!==code))); }
+
+// Encode/decode map data to/from a compact string
+function encodeMap(data){
+  const raw=JSON.stringify({name:data.name,cols:data.cols,rows:data.rows,num_warps:data.num_warps||0,grid:data.grid});
+  const comp=pako.deflate(raw);
+  return btoa(String.fromCharCode(...comp)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+}
+function decodeMap(code){
+  const bin=atob(code.replace(/-/g,'+').replace(/_/g,'/'));
+  const bytes=Uint8Array.from(bin,c=>c.charCodeAt(0));
+  if(bytes[0]===0x78){const j=pako.inflate(bytes,{to:'string'});return JSON.parse(j);}
+  return JSON.parse(decodeURIComponent(escape(bin)));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════════════════════════════
+let currentPage='home';
+
+function showPage(name){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById('page-'+name).classList.add('active');
+  document.getElementById('tab-bar').classList.toggle('show', name!=='home');
+  document.getElementById('game-hud').style.display = name==='game'?'flex':'none';
+  document.querySelectorAll('.tab-btn[id^=tab-]').forEach(b=>b.classList.remove('active'));
+  const tb=document.getElementById('tab-'+name);
+  if(tb) tb.classList.add('active');
+  currentPage=name;
+  if(name==='game') { resizeCanvas(); recenter(); }
+  if(name==='editor') { edResizeCanvas(); }
+}
+
+function goHome(){
+  if(animFrame){cancelAnimationFrame(animFrame);animFrame=null;}
+  document.getElementById('win-overlay').classList.remove('show');
+  showPage('home');
+  document.getElementById('tab-bar').classList.remove('show');
+  renderSavedList();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MAP LOADING
+// ═══════════════════════════════════════════════════════════════════
+async function loadCode(){
+  const raw=document.getElementById('code-input').value.trim();
+  if(!raw){document.getElementById('load-error').textContent='Enter a code first.';return;}
+  document.getElementById('load-error').textContent='Loading…';
+  try{
+    let data=null;
+    // Short code (8 hex chars)?
+    if(/^[0-9a-f]{8}$/i.test(raw)){
+      data=await loadFromCloud(raw);
     }
-
-def map_to_dict(name, grid, num_warps, warp_counts):
-    return {"name": name, "grid": grid, "num_warps": num_warps,
-            "warp_counts": list(warp_counts)}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-class Editor:
-    def __init__(self):
-        pygame.init()
-        self.screen = pygame.display.set_mode((WIN_W, WIN_H), pygame.RESIZABLE)
-        pygame.display.set_caption("Warp Maze Editor")
-
-        self.font_sm  = pygame.font.SysFont("monospace", 10)
-        self.font_med = pygame.font.SysFont("monospace", 12, bold=True)
-        self.font_lg  = pygame.font.SysFont("monospace", 13, bold=True)
-
-        # ── Site URL config ──────────────────────────────────────────────────
-        self.site_url    = self._load_site_url()
-        self.jsonbin_key = self._load_jsonbin_key()
-
-        # ── Map library ──────────────────────────────────────────────────────
-        self.library      = []
-        self.active_idx   = 0
-        self.lib_scroll   = 0
-        self.lib_renaming = -1
-        self.rename_buf   = ""
-
-        self.load_library()
-        if not self.library:
-            self.library.append(empty_map("Map 1"))
-            self.save_library()
-
-        # ── Per-map working state (loaded from active map) ───────────────────
-        self.grid        = []
-        self.num_warps   = 0
-        self.warp_counts = []
-        self.history     = []
-        self._load_active()
-
-        # ── Editor state ─────────────────────────────────────────────────────
-        self.sel_tile    = WALL
-        self.sel_warp    = 0
-        self.drawing     = False
-        self.erasing     = False
-        self.share_code  = ""
-        self.msg         = ""
-        self.msg_timer   = 0
-        self.btn_rects   = {}
-        self.warp_scroll = 0
-        self.warp_list_h = 0
-        self.WARP_ROW_H  = 27
-        self.LIB_ROW_H   = 30
-        self.lib_area_h  = 0
-
-        # ── Share dialog ──────────────────────────────────────────────────────
-        self.share_dialog_open = False
-        self.share_full_url    = ""
-        self.share_short_code  = ""       # 8-char short code if jsonbin succeeded
-        self.share_uploading   = False    # True while upload is in progress
-        self.url_editing       = False
-        self.key_editing       = False    # typing in the jsonbin key field
-        self.url_buf           = self.site_url
-        self.key_buf           = self.jsonbin_key
-
-        # ── Camera ───────────────────────────────────────────────────────────
-        self.tile_size = TILE_DEF
-        self.cam_x = 0.0; self.cam_y = 0.0
-        self.keys_held = set()
-        self.panning = False
-        self.pan_start = (0,0); self.cam_start = (0.0,0.0)
-
-    # ── Config: site URL + jsonbin key ──────────────────────────────────────
-    def _load_config(self):
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE) as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {}
-
-    def _save_config(self, **kwargs):
-        cfg = self._load_config()
-        cfg.update(kwargs)
-        try:
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(cfg, f)
-        except Exception:
-            pass
-
-    def _load_site_url(self):
-        return self._load_config().get("site_url", DEFAULT_SITE_URL)
-
-    def _load_jsonbin_key(self):
-        return self._load_config().get("jsonbin_key", DEFAULT_JSONBIN_KEY)
-
-    def _save_site_url(self, url):
-        self.site_url = url.strip().rstrip("/") + "/"
-        self._save_config(site_url=self.site_url)
-
-    def _save_jsonbin_key(self, key):
-        self.jsonbin_key = key.strip()
-        self._save_config(jsonbin_key=self.jsonbin_key)
-
-    # ── Library persistence ──────────────────────────────────────────────────
-    def load_library(self):
-        if os.path.exists(SAVE_FILE):
-            try:
-                with open(SAVE_FILE, "r") as f:
-                    data = json.load(f)
-                self.library = data.get("maps", [])
-                self.active_idx = clamp(data.get("active", 0), 0, max(0, len(self.library)-1))
-                return
-            except Exception:
-                pass
-        self.library = []
-        self.active_idx = 0
-
-    def save_library(self):
-        # Flush current edits into library before saving
-        if self.library:
-            self.library[self.active_idx] = map_to_dict(
-                self.library[self.active_idx]["name"],
-                self.grid, self.num_warps, self.warp_counts)
-        try:
-            with open(SAVE_FILE, "w") as f:
-                json.dump({"maps": self.library, "active": self.active_idx}, f)
-        except Exception as e:
-            self.flash(f"Save failed: {e}")
-
-    def _load_active(self):
-        """Copy active library entry into working state."""
-        m = self.library[self.active_idx]
-        self.grid        = copy.deepcopy(m["grid"])
-        self.num_warps   = m.get("num_warps", 0)
-        self.warp_counts = list(m.get("warp_counts", [0]*self.num_warps))
-        # Ensure warp_counts length matches num_warps
-        while len(self.warp_counts) < self.num_warps:
-            self.warp_counts.append(0)
-        self.history = []
-        self.share_code = ""
-        self.cam_x = 0.0; self.cam_y = 0.0
-
-    def switch_map(self, idx):
-        """Save current, switch to idx."""
-        self.save_library()
-        self.active_idx = idx
-        self._load_active()
-        self.flash(f"Loaded: {self.library[idx]['name']}")
-
-    def new_map(self):
-        self.save_library()
-        name = f"Map {len(self.library)+1}"
-        self.library.append(empty_map(name))
-        self.active_idx = len(self.library) - 1
-        self._load_active()
-        self.save_library()
-        self.flash(f"Created: {name}")
-        # Scroll lib to bottom
-        self.lib_scroll = max(0, len(self.library)*self.LIB_ROW_H - self.lib_area_h)
-
-    def duplicate_map(self, idx):
-        self.save_library()
-        src = self.library[idx]
-        dup = copy.deepcopy(src)
-        dup["name"] = src["name"] + " copy"
-        insert_at = idx + 1
-        self.library.insert(insert_at, dup)
-        self.active_idx = insert_at
-        self._load_active()
-        self.save_library()
-        self.flash(f"Duplicated: {dup['name']}")
-
-    def delete_map(self, idx):
-        if len(self.library) <= 1:
-            self.flash("Can't delete the last map!"); return
-        self.library.pop(idx)
-        self.active_idx = clamp(idx, 0, len(self.library)-1)
-        self._load_active()
-        self.save_library()
-        self.flash("Map deleted")
-
-    def start_rename(self, idx):
-        self.lib_renaming = idx
-        self.rename_buf   = self.library[idx]["name"]
-
-    def finish_rename(self):
-        if self.lib_renaming >= 0:
-            name = self.rename_buf.strip() or self.library[self.lib_renaming]["name"]
-            self.library[self.lib_renaming]["name"] = name
-            self.lib_renaming = -1
-            self.save_library()
-
-    def cancel_rename(self):
-        self.lib_renaming = -1
-
-    # ── Warp pair management ─────────────────────────────────────────────────
-    def add_warp(self):
-        self.warp_counts.append(0)
-        self.num_warps += 1
-        self.sel_tile = WARP
-        self.sel_warp = self.num_warps - 1
-        self.flash(f"Added Warp {self.num_warps} — place 2 tiles")
-        self.warp_scroll = max(0, self.num_warps*self.WARP_ROW_H - self.warp_list_h + 10)
-
-    def delete_warp(self, idx):
-        self._push()
-        for r in range(ROWS):
-            for c in range(COLS):
-                v = self.grid[r][c]
-                if   v == WARP + idx: self.grid[r][c] = EMPTY
-                elif v >  WARP + idx: self.grid[r][c] = v - 1
-        self.warp_counts.pop(idx)
-        self.num_warps -= 1
-        if self.sel_warp >= self.num_warps and self.num_warps > 0:
-            self.sel_warp = self.num_warps - 1
-        if self.num_warps == 0:
-            self.sel_tile = WALL
-        self.flash(f"Deleted warp pair {idx+1}")
-
-    # ── History ──────────────────────────────────────────────────────────────
-    def _push(self):
-        self.history.append((copy.deepcopy(self.grid), list(self.warp_counts), self.num_warps))
-        if len(self.history) > 60: self.history.pop(0)
-
-    def undo(self):
-        if self.history:
-            self.grid, self.warp_counts, self.num_warps = self.history.pop()
-            self.flash("Undo!")
-
-    def clear(self):
-        self._push()
-        self.grid = [[EMPTY]*COLS for _ in range(ROWS)]
-        self.warp_counts = [0]*self.num_warps
-        self.flash("Grid cleared")
-
-    # ── Camera ───────────────────────────────────────────────────────────────
-    def cam_max_x(self): return max(0.0, COLS*self.tile_size - VIEW_W)
-    def cam_max_y(self): return max(0.0, ROWS*self.tile_size - VIEW_H)
-    def clamp_cam(self):
-        self.cam_x = clamp(self.cam_x, 0, self.cam_max_x())
-        self.cam_y = clamp(self.cam_y, 0, self.cam_max_y())
-
-    def screen_to_cell(self, mx, my):
-        if mx >= VIEW_W or mx < 0 or my < 0 or my >= VIEW_H: return None
-        c = int((mx + self.cam_x) / self.tile_size)
-        r = int((my + self.cam_y) / self.tile_size)
-        return (c, r) if 0 <= c < COLS and 0 <= r < ROWS else None
-
-    # ── Tile placement ───────────────────────────────────────────────────────
-    def place(self, c, r):
-        if self.sel_tile == WARP:
-            if self.num_warps == 0: self.flash("Add a warp pair first!"); return
-            wv = WARP + self.sel_warp
-            if self.grid[r][c] == wv: return
-            if self.warp_counts[self.sel_warp] >= 2:
-                self.flash(f"Warp {self.sel_warp+1} already has 2 tiles!"); return
-            self._push()
-            old = self.grid[r][c]
-            if old >= WARP: self.warp_counts[old-WARP] = max(0, self.warp_counts[old-WARP]-1)
-            self.grid[r][c] = wv
-            self.warp_counts[self.sel_warp] += 1
-        else:
-            if self.grid[r][c] == self.sel_tile: return
-            self._push()
-            old = self.grid[r][c]
-            if old >= WARP: self.warp_counts[old-WARP] = max(0, self.warp_counts[old-WARP]-1)
-            self.grid[r][c] = self.sel_tile
-
-    def erase(self, c, r):
-        if self.grid[r][c] == EMPTY: return
-        self._push()
-        old = self.grid[r][c]
-        if old >= WARP: self.warp_counts[old-WARP] = max(0, self.warp_counts[old-WARP]-1)
-        self.grid[r][c] = EMPTY
-
-    # ── Share code ───────────────────────────────────────────────────────────
-    def generate_code(self):
-        starts = sum(1 for row in self.grid for v in row if v == START)
-        ends   = sum(1 for row in self.grid for v in row if v == END)
-        if starts == 0: self.flash("Need at least 1 Start tile!"); return
-        if ends   == 0: self.flash("Need at least 1 Exit tile!");  return
-        bad = [i for i in range(self.num_warps) if self.warp_counts[i] == 1]
-        if bad: self.flash(f"Warp {bad[0]+1} needs exactly 2 tiles!"); return
-
-        name = self.library[self.active_idx]["name"]
-        data = {"name": name, "cols": COLS, "rows": ROWS,
-                "num_warps": self.num_warps, "grid": self.grid}
-        raw        = json.dumps(data, separators=(",",":")).encode()
-        compressed = zlib.compress(raw, level=9)
-        long_code  = base64.urlsafe_b64encode(compressed).decode()
-        self.share_code       = long_code
-        self.share_short_code = ""
-
-        base_url = self.site_url.rstrip("/") + "/"
-        self.share_full_url = f"{base_url}#{long_code}"
-
-        # Open dialog immediately with long code — update it if short code arrives
-        self.share_dialog_open = True
-        self.share_uploading   = True
-        self.url_editing       = False
-        self.key_editing       = False
-        self.url_buf           = self.site_url
-        self.key_buf           = self.jsonbin_key
-
-        # Save long-code URL to file right away
-        safe  = "".join(c for c in name if c.isalnum() or c in " _-").strip().replace(" ","_")
-        self.share_fname = f"{safe}_code.txt" if safe else "map_code.txt"
-
-        if self.jsonbin_key:
-            # Upload in background thread so UI stays responsive
-            def upload():
-                short = self._upload_to_jsonbin(data)
-                if short:
-                    self.share_short_code = short
-                    self.share_full_url   = f"{base_url}#{short}"
-                self.share_uploading = False
-                # Save whichever URL we ended up with
-                with open(self.share_fname, "w") as f:
-                    f.write(self.share_full_url)
-                print(f"\n{'='*60}")
-                print(f"  SHARE LINK for '{name}'")
-                if short:
-                    print(f"  Short code:  {short}")
-                print(f"  Full link:   {self.share_full_url}")
-                print(f"  Saved to:    {self.share_fname}")
-                print(f"{'='*60}\n")
-            threading.Thread(target=upload, daemon=True).start()
-        else:
-            self.share_uploading = False
-            with open(self.share_fname, "w") as f:
-                f.write(self.share_full_url)
-            print(f"\n{'='*60}")
-            print(f"  SHARE LINK for '{name}'  (no API key — long code)")
-            print(f"  {self.share_full_url}")
-            print(f"  Tip: add a jsonbin Access Key to get short 8-char codes!")
-            print(f"{'='*60}\n")
-
-    def _upload_to_jsonbin(self, data):
-        """Upload map data to jsonbin.io. Returns 8-char short code or None."""
-        try:
-            payload = json.dumps(data, separators=(",",":")).encode()
-            req = urllib.request.Request(
-                JSONBIN_URL,
-                data=payload,
-                method="POST",
-                headers={
-                    "Content-Type":  "application/json",
-                    "X-Master-Key":  self.jsonbin_key,
-                    "X-Bin-Private": "false",
-                }
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                result = json.loads(resp.read())
-            full_id = (result.get("metadata") or {}).get("id", "")
-            return full_id[-8:] if len(full_id) >= 8 else None
-        except Exception as e:
-            print(f"  Jsonbin upload failed: {e}")
-            return None
-
-    def flash(self, msg):
-        self.msg = msg; self.msg_timer = 200
-
-    # ── Draw: share dialog ────────────────────────────────────────────────────
-    def draw_share_dialog(self):
-        overlay = pygame.Surface((WIN_W, WIN_H), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 180))
-        self.screen.blit(overlay, (0, 0))
-
-        DW, DH = 760, 340
-        dx = (WIN_W - DW) // 2
-        dy = (WIN_H - DH) // 2
-        pygame.draw.rect(self.screen, (14, 14, 28), (dx, dy, DW, DH), border_radius=10)
-        pygame.draw.rect(self.screen, HIGHLIGHT,    (dx, dy, DW, DH), 2, border_radius=10)
-
-        mx2, my2 = pygame.mouse.get_pos()
-        y = dy + 14
-        t = self.font_lg.render("SHARE MAP", True, HIGHLIGHT)
-        self.screen.blit(t, t.get_rect(centerx=dx+DW//2, y=y)); y += 26
-
-        # ── Short code row ────────────────────────────────────────────────────
-        if self.share_uploading:
-            dots = "." * (1 + (pygame.time.get_ticks() // 400) % 3)
-            t = self.font_med.render(f"Uploading{dots}  (getting short code)", True, (180, 180, 100))
-            self.screen.blit(t, t.get_rect(centerx=dx+DW//2, y=y)); y += 22
-        elif self.share_short_code:
-            t = self.font_sm.render("Short code  (paste this into the game):", True, (140, 140, 180))
-            self.screen.blit(t, (dx+16, y)); y += 14
-            code_r = pygame.Rect(dx+16, y, DW-32, 28)
-            pygame.draw.rect(self.screen, (8, 8, 20), code_r)
-            pygame.draw.rect(self.screen, (60, 200, 80), code_r, 2)
-            ct = self.font_lg.render(self.share_short_code, True, (100, 255, 120))
-            self.screen.blit(ct, ct.get_rect(center=code_r.center))
-            self.dialog_code_rect = code_r
-            y += 34
-        else:
-            t = self.font_sm.render("No API key set — using long code  (see below)", True, (160, 140, 60))
-            self.screen.blit(t, (dx+16, y)); y += 18
-
-        # ── Site URL field ────────────────────────────────────────────────────
-        t = self.font_sm.render("Site URL  (click to edit):", True, (140, 140, 180))
-        self.screen.blit(t, (dx+16, y)); y += 13
-        url_r = pygame.Rect(dx+16, y, DW-32, 20)
-        url_bg = (20, 20, 50) if self.url_editing else (16, 16, 38)
-        pygame.draw.rect(self.screen, url_bg, url_r)
-        pygame.draw.rect(self.screen, HIGHLIGHT if self.url_editing else (50, 50, 90), url_r, 1)
-        disp = (self.url_buf + "|") if self.url_editing else self.site_url
-        t = self.font_sm.render(disp[:92], True, (180, 220, 255) if self.url_editing else (100, 140, 200))
-        self.screen.blit(t, (url_r.x+4, url_r.y+4))
-        self.dialog_url_rect = url_r; y += 26
-
-        # ── Jsonbin key field ─────────────────────────────────────────────────
-        t = self.font_sm.render("Jsonbin Access Key  (click to edit — enables short codes):", True, (140, 140, 180))
-        self.screen.blit(t, (dx+16, y)); y += 13
-        key_r = pygame.Rect(dx+16, y, DW-32, 20)
-        key_bg = (20, 20, 50) if self.key_editing else (16, 16, 38)
-        pygame.draw.rect(self.screen, key_bg, key_r)
-        pygame.draw.rect(self.screen, HIGHLIGHT if self.key_editing else (50, 50, 90), key_r, 1)
-        key_disp = (self.key_buf + "|") if self.key_editing else (
-            self.jsonbin_key[:12] + "…" if len(self.jsonbin_key) > 12 else
-            (self.jsonbin_key or "— not set —"))
-        key_col = (180, 220, 255) if self.key_editing else ((100, 200, 140) if self.jsonbin_key else (120, 100, 80))
-        t = self.font_sm.render(key_disp[:92], True, key_col)
-        self.screen.blit(t, (key_r.x+4, key_r.y+4))
-        self.dialog_key_rect = key_r; y += 26
-
-        # ── Full URL display ──────────────────────────────────────────────────
-        t = self.font_sm.render("Full link:", True, (140, 140, 180))
-        self.screen.blit(t, (dx+16, y)); y += 13
-        link_r = pygame.Rect(dx+16, y, DW-32, 38)
-        pygame.draw.rect(self.screen, (8, 8, 20), link_r)
-        pygame.draw.rect(self.screen, (50, 100, 50), link_r, 1)
-        url = self.share_full_url
-        # Split into two lines around the # symbol
-        split = url.find('#')
-        if split > 0 and split < len(url)-1:
-            line1, line2 = url[:split+1], url[split+1:split+70]
-            if len(url)-split > 70: line2 += "…"
-        else:
-            mid = min(70, len(url)//2)
-            line1, line2 = url[:mid], url[mid:mid+70]
-        t1 = self.font_sm.render(line1, True, (90, 200, 110))
-        t2 = self.font_sm.render(line2, True, (90, 200, 110))
-        self.screen.blit(t1, (link_r.x+5, link_r.y+4))
-        self.screen.blit(t2, (link_r.x+5, link_r.y+20))
-        self.dialog_link_rect = link_r; y += 44
-
-        # ── Buttons ───────────────────────────────────────────────────────────
-        self.dialog_btns = {}
-        bw, gap = 150, 12
-        btns = [("COPY CODE",       (40,120,55)),
-                ("COPY LINK",       (40,60,130)),
-                ("OPEN IN BROWSER", (60,50,100)),
-                ("CLOSE",           (100,40,40))]
-        total = len(btns)*bw + (len(btns)-1)*gap
-        bx = dx + (DW-total)//2
-        for label, color in btns:
-            r = pygame.Rect(bx, y, bw, 26)
-            bg = BTN_HOVER if r.collidepoint(mx2, my2) else color
-            pygame.draw.rect(self.screen, bg, r, border_radius=4)
-            t = self.font_med.render(label, True, (220, 220, 255))
-            self.screen.blit(t, t.get_rect(center=r.center))
-            self.dialog_btns[label] = r
-            bx += bw + gap
-
-    # ── Draw: grid ───────────────────────────────────────────────────────────
-    def draw_grid(self):
-        T = self.tile_size
-        c0 = int(self.cam_x/T); r0 = int(self.cam_y/T)
-        c1 = min(COLS, c0+VIEW_W//T+2); r1 = min(ROWS, r0+VIEW_H//T+2)
-        for r in range(r0, r1):
-            for c in range(c0, c1):
-                sx = int(c*T - self.cam_x); sy = int(r*T - self.cam_y)
-                val = self.grid[r][c]
-                gap = 1 if T > 6 else 0
-                if   val == WALL:  color = TILE_COLORS[WALL]
-                elif val == EMPTY: color = (22,22,38) if (r+c)%2==0 else (18,18,34)
-                elif val == START: color = TILE_COLORS[START]
-                elif val == END:   color = TILE_COLORS[END]
-                elif val == ITEM:  color = TILE_COLORS[ITEM]
-                elif val == ENEMY: color = TILE_COLORS[ENEMY]
-                elif val == LAVA:  color = TILE_COLORS[LAVA]
-                else:              color = warp_color(val-WARP)
-                rect = pygame.Rect(sx, sy, T-gap, T-gap)
-                pygame.draw.rect(self.screen, color, rect)
-                if T >= 14 and val not in (EMPTY, WALL):
-                    if   val==START: lbl,fc="S",(200,255,200)
-                    elif val==END:   lbl,fc="E",(255,180,180)
-                    elif val==ITEM:  lbl,fc="*",(255,240,100)
-                    elif val==ENEMY: lbl,fc="!",(255,150,180)
-                    elif val==LAVA:  lbl,fc="~",(255,200,100)
-                    else:            lbl,fc=None,None   # no number on warps
-                    if lbl:
-                        t = self.font_sm.render(lbl, True, fc)
-                        self.screen.blit(t, t.get_rect(center=rect.center))
-        if T >= 8:
-            for c in range(c0, c1+1):
-                sx = int(c*T-self.cam_x)
-                pygame.draw.line(self.screen, GRID_LINE, (sx,0),(sx,VIEW_H))
-            for r in range(r0, r1+1):
-                sy = int(r*T-self.cam_y)
-                pygame.draw.line(self.screen, GRID_LINE, (0,sy),(VIEW_W,sy))
-
-    # ── Draw: minimap ─────────────────────────────────────────────────────────
-    def draw_minimap(self, px, y):
-        MW, MH = 238, 130
-        surf = pygame.Surface((MW, MH)); surf.fill((10,10,20))
-        scx, scy = MW/COLS, MH/ROWS
-        for r in range(ROWS):
-            for c in range(COLS):
-                v = self.grid[r][c]
-                if v == EMPTY: continue
-                if   v==WALL:  col=(80,65,45)
-                elif v==START: col=(50,180,80)
-                elif v==END:   col=(200,60,50)
-                elif v==ITEM:  col=(200,180,30)
-                elif v==ENEMY: col=(200,50,90)
-                elif v==LAVA:  col=(220,70,10)
-                else:          col=warp_color(v-WARP)
-                mr = pygame.Rect(int(c*scx),int(r*scy),max(1,int(scx)+1),max(1,int(scy)+1))
-                pygame.draw.rect(surf, col, mr)
-        T=self.tile_size
-        vx=int(self.cam_x/T*scx); vy=int(self.cam_y/T*scy)
-        vw=max(4,int(VIEW_W/T*scx)); vh=max(4,int(VIEW_H/T*scy))
-        pygame.draw.rect(surf, HIGHLIGHT, (vx,vy,vw,vh), 1)
-        self.screen.blit(surf, (px+10, y))
-        pygame.draw.rect(self.screen, (80,80,120), (px+10,y,MW,MH), 1)
-
-    # ── Draw: full panel ──────────────────────────────────────────────────────
-    def draw_panel(self):
-        px = VIEW_W
-        pygame.draw.rect(self.screen, PANEL_BG, (px,0,PANEL_W,WIN_H))
-        pygame.draw.line(self.screen, PANEL_LINE, (px,0),(px,WIN_H), 2)
-        mx2, my2 = pygame.mouse.get_pos()
-        self.btn_rects = {}
-        y = 6
-
-        # ════════════════════════════════════════
-        # MAP LIBRARY SECTION
-        # ════════════════════════════════════════
-        t = self.font_lg.render("MY MAPS", True, HIGHLIGHT)
-        self.screen.blit(t, (px+8, y))
-        # [+ NEW MAP] button
-        new_r = pygame.Rect(px+PANEL_W-82, y-1, 76, 18)
-        pygame.draw.rect(self.screen, BTN_HOVER if new_r.collidepoint(mx2,my2) else BTN_ADD, new_r, border_radius=3)
-        t2 = self.font_sm.render("+ NEW MAP", True, (200,255,200))
-        self.screen.blit(t2, t2.get_rect(center=new_r.center))
-        self.btn_rects["NEW_MAP"] = new_r
-        y += 20
-
-        # Library list area
-        LIB_TOP = y
-        LIB_H   = min(len(self.library) * self.LIB_ROW_H + 4,
-                      max(self.LIB_ROW_H, WIN_H // 5))
-        self.lib_area_h = LIB_H
-        LRH = self.LIB_ROW_H
-
-        old_clip = self.screen.get_clip()
-        self.screen.set_clip(pygame.Rect(px, LIB_TOP, PANEL_W, LIB_H))
-        self.lib_row_rects  = []
-        self.lib_dup_rects  = []
-        self.lib_del_rects  = []
-
-        for i, m in enumerate(self.library):
-            ry = LIB_TOP + i*LRH - int(self.lib_scroll)
-            if ry + LRH < LIB_TOP or ry > LIB_TOP + LIB_H:
-                self.lib_row_rects.append(None)
-                self.lib_dup_rects.append(None)
-                self.lib_del_rects.append(None)
-                continue
-
-            is_active = (i == self.active_idx)
-            row_r = pygame.Rect(px+4, ry+1, PANEL_W-60, LRH-2)
-            dup_r = pygame.Rect(px+PANEL_W-54, ry+4, 22, LRH-9)
-            del_r = pygame.Rect(px+PANEL_W-28, ry+4, 22, LRH-9)
-
-            bg = MAP_ACTIVE if is_active else (MAP_HOVER if row_r.collidepoint(mx2,my2) else (24,24,42))
-            pygame.draw.rect(self.screen, bg, row_r, border_radius=3)
-            if is_active:
-                pygame.draw.rect(self.screen, HIGHLIGHT, row_r, 1, border_radius=3)
-
-            # Name or rename input
-            if self.lib_renaming == i:
-                # Draw text input box
-                inp_r = pygame.Rect(px+6, ry+4, PANEL_W-64, LRH-10)
-                pygame.draw.rect(self.screen, (10,10,20), inp_r)
-                pygame.draw.rect(self.screen, HIGHLIGHT, inp_r, 1)
-                disp = self.rename_buf + "|"
-                t = self.font_sm.render(disp[:26], True, HIGHLIGHT)
-                self.screen.blit(t, (inp_r.x+3, inp_r.y+3))
-            else:
-                name_col = HIGHLIGHT if is_active else TEXT_COL
-                name_str = m["name"][:22] + ("…" if len(m["name"])>22 else "")
-                t = self.font_sm.render(name_str, True, name_col)
-                self.screen.blit(t, (px+8, ry+9))
-
-            # Duplicate button (⧉)
-            dbg = BTN_HOVER if dup_r.collidepoint(mx2,my2) else (50,50,90)
-            pygame.draw.rect(self.screen, dbg, dup_r, border_radius=3)
-            t = self.font_sm.render("⧉", True, (180,180,255))
-            self.screen.blit(t, t.get_rect(center=dup_r.center))
-
-            # Delete button (x)
-            xbg = BTN_HOVER if del_r.collidepoint(mx2,my2) else BTN_DEL
-            pygame.draw.rect(self.screen, xbg, del_r, border_radius=3)
-            t = self.font_sm.render("x", True, (255,140,140))
-            self.screen.blit(t, t.get_rect(center=del_r.center))
-
-            self.lib_row_rects.append(row_r)
-            self.lib_dup_rects.append(dup_r)
-            self.lib_del_rects.append(del_r)
-
-        # Scrollbar for library
-        if len(self.library)*LRH > LIB_H:
-            total = len(self.library)*LRH
-            bh = max(14, int(LIB_H*LIB_H/total))
-            by = LIB_TOP + int(self.lib_scroll/total*LIB_H)
-            pygame.draw.rect(self.screen,(40,40,70),(px+PANEL_W-5,LIB_TOP,4,LIB_H))
-            pygame.draw.rect(self.screen,HIGHLIGHT,(px+PANEL_W-5,by,4,bh))
-
-        self.screen.set_clip(old_clip)
-        y = LIB_TOP + LIB_H + 4
-
-        # Rename hint
-        if self.lib_renaming >= 0:
-            t = self.font_sm.render("Enter=confirm  Esc=cancel", True, (140,140,80))
-            self.screen.blit(t, (px+8, y)); y += 14
-
-        pygame.draw.line(self.screen, PANEL_LINE, (px+6,y),(px+PANEL_W-6,y)); y += 6
-
-        # ════════════════════════════════════════
-        # TILE PALETTE
-        # ════════════════════════════════════════
-        t = self.font_lg.render("TILE PALETTE", True, HIGHLIGHT)
-        self.screen.blit(t, (px+8, y)); y += 20
-
-        for tid in [WALL, START, END, ITEM, ENEMY, LAVA]:
-            sel  = (self.sel_tile == tid)
-            rect = pygame.Rect(px+6, y, PANEL_W-12, 24)
-            bg   = BTN_ACT if sel else (BTN_HOVER if rect.collidepoint(mx2,my2) else BTN_NORM)
-            pygame.draw.rect(self.screen, bg, rect, border_radius=3)
-            if sel: pygame.draw.rect(self.screen, HIGHLIGHT, rect, 2, border_radius=3)
-            pygame.draw.rect(self.screen, TILE_COLORS[tid], (px+10, y+5, 12,12))
-            t = self.font_med.render(TILE_LABELS[tid], True, TEXT_COL)
-            self.screen.blit(t, (px+26, y+5))
-            y += 28
-
-        y += 4
-        pygame.draw.line(self.screen, PANEL_LINE, (px+6,y),(px+PANEL_W-6,y)); y += 6
-
-        # ════════════════════════════════════════
-        # WARP PAIRS
-        # ════════════════════════════════════════
-        t = self.font_lg.render("WARP PAIRS", True, HIGHLIGHT)
-        self.screen.blit(t, (px+8, y))
-        add_r = pygame.Rect(px+PANEL_W-88, y-1, 82, 18)
-        pygame.draw.rect(self.screen, BTN_HOVER if add_r.collidepoint(mx2,my2) else BTN_ADD, add_r, border_radius=3)
-        t2 = self.font_sm.render("+ ADD WARP", True, (200,255,200))
-        self.screen.blit(t2, t2.get_rect(center=add_r.center))
-        self.btn_rects["ADD_WARP"] = add_r
-        y += 18
-        hint = self.font_sm.render("Place 2 tiles = linked pair", True, (110,110,150))
-        self.screen.blit(hint, (px+8, y)); y += 14
-
-        WARP_TOP = y
-        FIXED_BELOW = 195
-        warp_area_h = max(50, WIN_H - WARP_TOP - FIXED_BELOW)
-        self.warp_list_h = warp_area_h
-        WRH = self.WARP_ROW_H
-
-        old_clip = self.screen.get_clip()
-        self.screen.set_clip(pygame.Rect(px, WARP_TOP, PANEL_W, warp_area_h))
-        self.warp_row_rects = []
-        self.warp_del_rects = []
-
-        for i in range(self.num_warps):
-            ry = WARP_TOP + i*WRH - int(self.warp_scroll)
-            if ry+WRH < WARP_TOP or ry > WARP_TOP+warp_area_h:
-                self.warp_row_rects.append(None); self.warp_del_rects.append(None); continue
-            sel   = (self.sel_tile==WARP and self.sel_warp==i)
-            row_r = pygame.Rect(px+6, ry, PANEL_W-34, WRH-3)
-            del_r = pygame.Rect(px+PANEL_W-28, ry+3, 22, WRH-8)
-            bg = BTN_ACT if sel else (BTN_HOVER if row_r.collidepoint(mx2,my2) else BTN_NORM)
-            pygame.draw.rect(self.screen, bg, row_r, border_radius=3)
-            if sel: pygame.draw.rect(self.screen, HIGHLIGHT, row_r, 2, border_radius=3)
-            pygame.draw.rect(self.screen, warp_color(i), (px+10, ry+6, 10, 10))
-            cnt = self.warp_counts[i] if i < len(self.warp_counts) else 0
-            t = self.font_sm.render(f"Warp {i+1}  [{cnt}/2]", True, TEXT_COL)
-            self.screen.blit(t, (px+25, ry+7))
-            dbg = BTN_HOVER if del_r.collidepoint(mx2,my2) else BTN_DEL
-            pygame.draw.rect(self.screen, dbg, del_r, border_radius=3)
-            t = self.font_sm.render("x", True, (255,160,160))
-            self.screen.blit(t, t.get_rect(center=del_r.center))
-            self.warp_row_rects.append(row_r); self.warp_del_rects.append(del_r)
-
-        if self.num_warps*WRH > warp_area_h:
-            total = self.num_warps*WRH
-            bh = max(14, int(warp_area_h*warp_area_h/total))
-            by = WARP_TOP + int(self.warp_scroll/total*warp_area_h)
-            pygame.draw.rect(self.screen,(40,40,70),(px+PANEL_W-5,WARP_TOP,4,warp_area_h))
-            pygame.draw.rect(self.screen,HIGHLIGHT,(px+PANEL_W-5,by,4,bh))
-
-        self.screen.set_clip(old_clip)
-        y = WARP_TOP + warp_area_h + 4
-        pygame.draw.line(self.screen, PANEL_LINE, (px+6,y),(px+PANEL_W-6,y)); y += 4
-
-        # ════════════════════════════════════════
-        # ACTION BUTTONS
-        # ════════════════════════════════════════
-        zoom_t = self.font_sm.render(f"Zoom: {self.tile_size}px  (scroll wheel)", True, (90,90,130))
-        self.screen.blit(zoom_t, (px+8, y)); y += 14
-
-        for lbl, col in [("SHARE CODE",   (50,130,70)),
-                          ("SAVE  Ctrl+S", (50,70,130)),
-                          ("UNDO  Ctrl+Z", (70,70,110)),
-                          ("CLEAR GRID",   (110,50,50))]:
-            r = pygame.Rect(px+6, y, PANEL_W-12, 26)
-            bg = BTN_HOVER if r.collidepoint(mx2,my2) else col
-            pygame.draw.rect(self.screen, bg, r, border_radius=4)
-            t = self.font_med.render(lbl, True, (220,220,255))
-            self.screen.blit(t, t.get_rect(center=r.center))
-            self.btn_rects[lbl] = r
-            y += 30
-
-        # Minimap
-        t = self.font_sm.render("MINIMAP", True, (90,90,140))
-        self.screen.blit(t, (px+8, y)); y += 12
-        self.draw_minimap(px, y); y += 144
-
-        # Bottom hints
-        for h in ["LMB:place  RMB:erase  MMB:pan",
-                  "WASD:scroll  Wheel:zoom/scroll"]:
-            t = self.font_sm.render(h, True, (55,55,95))
-            self.screen.blit(t, (px+6, y)); y += 13
-
-        # Flash message
-        if self.msg_timer > 0:
-            t = self.font_med.render(self.msg, True, HIGHLIGHT)
-            self.screen.blit(t, t.get_rect(center=(VIEW_W//2, VIEW_H-22)))
-            self.msg_timer -= 1
-
-    # ── Panel click handling ──────────────────────────────────────────────────
-    def handle_panel_click(self, mx, my):
-        # NEW MAP button
-        if self.btn_rects.get("NEW_MAP", pygame.Rect(0,0,0,0)).collidepoint(mx,my):
-            self.finish_rename(); self.new_map(); return
-
-        # Library rows (double-click to rename, single to switch)
-        if hasattr(self, 'lib_row_rects'):
-            for i, (row_r, dup_r, del_r) in enumerate(
-                    zip(self.lib_row_rects, self.lib_dup_rects, self.lib_del_rects)):
-                if del_r and del_r.collidepoint(mx,my):
-                    self.finish_rename(); self.delete_map(i); return
-                if dup_r and dup_r.collidepoint(mx,my):
-                    self.finish_rename(); self.duplicate_map(i); return
-                if row_r and row_r.collidepoint(mx,my):
-                    if self.lib_renaming == i:
-                        pass  # clicking inside rename box — ignore
-                    elif i == self.active_idx:
-                        self.start_rename(i)  # click active map to rename
-                    else:
-                        self.finish_rename(); self.switch_map(i)
-                    return
-
-        # ADD WARP
-        if self.btn_rects.get("ADD_WARP", pygame.Rect(0,0,0,0)).collidepoint(mx,my):
-            self.add_warp(); return
-
-        # Warp rows
-        if hasattr(self, 'warp_row_rects'):
-            for i, (row_r, del_r) in enumerate(zip(self.warp_row_rects, self.warp_del_rects)):
-                if del_r and del_r.collidepoint(mx,my):
-                    self.delete_warp(i); return
-                if row_r and row_r.collidepoint(mx,my):
-                    self.sel_tile=WARP; self.sel_warp=i; return
-
-        # Tile palette
-        px = VIEW_W; y = 6
-        # Skip past library area: header(20) + lib_area_h + 4 + divider(6)
-        y += 20 + self.lib_area_h + 4 + 6
-        if self.lib_renaming >= 0: y += 14
-        y += 20  # palette header
-        for tid in [WALL, START, END, ITEM, ENEMY, LAVA]:
-            if pygame.Rect(px+6, y, PANEL_W-12, 24).collidepoint(mx,my):
-                self.sel_tile = tid; return
-            y += 28
-
-        # Action buttons
-        for lbl, action in [("SHARE CODE",   self.generate_code),
-                             ("SAVE  Ctrl+S", self.save_library),
-                             ("UNDO  Ctrl+Z", self.undo),
-                             ("CLEAR GRID",   self.clear)]:
-            if self.btn_rects.get(lbl, pygame.Rect(0,0,0,0)).collidepoint(mx,my):
-                action(); return
-
-    def handle_panel_scroll(self, mx, my, y_amount):
-        px = VIEW_W
-        if mx < px: return
-        # Decide whether to scroll the library or warp list based on mouse y
-        lib_top  = 26
-        lib_bot  = lib_top + self.lib_area_h
-        if lib_top <= my <= lib_bot:
-            max_scroll = max(0, len(self.library)*self.LIB_ROW_H - self.lib_area_h)
-            self.lib_scroll = clamp(self.lib_scroll - y_amount*20, 0, max_scroll)
-        else:
-            max_scroll = max(0, self.num_warps*self.WARP_ROW_H - self.warp_list_h)
-            self.warp_scroll = clamp(self.warp_scroll - y_amount*20, 0, max_scroll)
-
-    # ── Main loop ─────────────────────────────────────────────────────────────
-    def run(self):
-        clock = pygame.time.Clock()
-        while True:
-            clock.tick(60)
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.save_library(); pygame.quit(); sys.exit()
-
-                elif event.type == pygame.KEYDOWN:
-                    self.keys_held.add(event.key)
-
-                    # Share dialog field editing
-                    if self.share_dialog_open:
-                        if self.url_editing:
-                            if event.key == pygame.K_RETURN:
-                                self._save_site_url(self.url_buf)
-                                self.url_editing = False
-                                base = self.site_url.rstrip("/") + "/"
-                                code = self.share_short_code or self.share_code
-                                self.share_full_url = f"{base}#{code}"
-                            elif event.key == pygame.K_ESCAPE:
-                                self.url_editing = False; self.url_buf = self.site_url
-                            elif event.key == pygame.K_BACKSPACE:
-                                self.url_buf = self.url_buf[:-1]
-                            elif event.unicode:
-                                self.url_buf += event.unicode
-                            continue
-                        if self.key_editing:
-                            if event.key == pygame.K_RETURN:
-                                self._save_jsonbin_key(self.key_buf)
-                                self.key_editing = False
-                                self.flash("API key saved — click SHARE CODE again!")
-                            elif event.key == pygame.K_ESCAPE:
-                                self.key_editing = False; self.key_buf = self.jsonbin_key
-                            elif event.key == pygame.K_BACKSPACE:
-                                self.key_buf = self.key_buf[:-1]
-                            elif event.unicode:
-                                self.key_buf += event.unicode
-                            continue
-                        if event.key == pygame.K_ESCAPE:
-                            self.share_dialog_open = False
-                        continue
-
-                    # Rename input
-                    if self.lib_renaming >= 0:
-                        if event.key == pygame.K_RETURN:  self.finish_rename()
-                        elif event.key == pygame.K_ESCAPE: self.cancel_rename()
-                        elif event.key == pygame.K_BACKSPACE:
-                            self.rename_buf = self.rename_buf[:-1]
-                        elif event.unicode and len(self.rename_buf) < 40:
-                            self.rename_buf += event.unicode
-                        continue
-
-                    if event.key == pygame.K_z and (event.mod & pygame.KMOD_CTRL):
-                        self.undo()
-                    elif event.key == pygame.K_s and (event.mod & pygame.KMOD_CTRL):
-                        self.save_library(); self.flash("Saved!")
-
-                elif event.type == pygame.KEYUP:
-                    self.keys_held.discard(event.key)
-
-                elif event.type == pygame.MOUSEWHEEL:
-                    if self.share_dialog_open: continue
-                    mx, my = pygame.mouse.get_pos()
-                    if mx < VIEW_W:
-                        old_t = self.tile_size
-                        self.tile_size = clamp(self.tile_size + event.y*2, TILE_MIN, TILE_MAX)
-                        scale = self.tile_size / old_t
-                        self.cam_x = (self.cam_x + mx)*scale - mx
-                        self.cam_y = (self.cam_y + my)*scale - my
-                        self.clamp_cam()
-                    else:
-                        self.handle_panel_scroll(mx, my, event.y)
-
-                elif event.type == pygame.MOUSEBUTTONDOWN:
-                    mx, my = event.pos
-
-                    # Share dialog clicks
-                    if self.share_dialog_open:
-                        if hasattr(self, 'dialog_url_rect') and self.dialog_url_rect.collidepoint(mx, my):
-                            self.url_editing = True; self.key_editing = False
-                            self.url_buf = self.site_url
-                        elif hasattr(self, 'dialog_key_rect') and self.dialog_key_rect.collidepoint(mx, my):
-                            self.key_editing = True; self.url_editing = False
-                            self.key_buf = self.jsonbin_key
-                        elif hasattr(self, 'dialog_btns'):
-                            def _copy(text):
-                                try:
-                                    pygame.scrap.init()
-                                    pygame.scrap.put(pygame.SCRAP_TEXT, text.encode())
-                                    self.flash("Copied to clipboard!")
-                                except Exception:
-                                    self.flash("Copy failed — see PyCharm console")
-                            if self.dialog_btns.get("COPY CODE", pygame.Rect(0,0,0,0)).collidepoint(mx,my):
-                                code = self.share_short_code or self.share_code
-                                _copy(code)
-                            elif self.dialog_btns.get("COPY LINK", pygame.Rect(0,0,0,0)).collidepoint(mx,my):
-                                _copy(self.share_full_url)
-                            elif self.dialog_btns.get("OPEN IN BROWSER", pygame.Rect(0,0,0,0)).collidepoint(mx,my):
-                                import webbrowser; webbrowser.open(self.share_full_url)
-                            elif self.dialog_btns.get("CLOSE", pygame.Rect(0,0,0,0)).collidepoint(mx,my):
-                                self.share_dialog_open = False
-                        continue
-
-                    if mx >= VIEW_W:
-                        self.handle_panel_click(mx, my)
-                    elif event.button == 2:
-                        self.panning=True; self.pan_start=(mx,my); self.cam_start=(self.cam_x,self.cam_y)
-                    elif event.button == 1:
-                        self.drawing=True; self.erasing=False
-                        cell = self.screen_to_cell(mx,my)
-                        if cell: self.place(*cell)
-                    elif event.button == 3:
-                        self.erasing=True; self.drawing=False
-                        cell = self.screen_to_cell(mx,my)
-                        if cell: self.erase(*cell)
-
-                elif event.type == pygame.MOUSEBUTTONUP:
-                    if event.button==2: self.panning=False
-                    if event.button==1: self.drawing=False
-                    if event.button==3: self.erasing=False
-
-                elif event.type == pygame.MOUSEMOTION:
-                    mx, my = event.pos
-                    if self.panning:
-                        self.cam_x = self.cam_start[0]+(self.pan_start[0]-mx)
-                        self.cam_y = self.cam_start[1]+(self.pan_start[1]-my)
-                        self.clamp_cam()
-                    elif mx < VIEW_W:
-                        cell = self.screen_to_cell(mx,my)
-                        if cell:
-                            if self.drawing:  self.place(*cell)
-                            elif self.erasing: self.erase(*cell)
-
-            # Keyboard scroll
-            if self.keys_held & {pygame.K_RIGHT,pygame.K_d}: self.cam_x += SCROLL_SPD
-            if self.keys_held & {pygame.K_LEFT, pygame.K_a}: self.cam_x -= SCROLL_SPD
-            if self.keys_held & {pygame.K_DOWN, pygame.K_s}: self.cam_y += SCROLL_SPD
-            if self.keys_held & {pygame.K_UP,   pygame.K_w}: self.cam_y -= SCROLL_SPD
-            if self.keys_held & {pygame.K_RIGHT,pygame.K_d,pygame.K_LEFT,pygame.K_a,
-                                  pygame.K_DOWN, pygame.K_s,pygame.K_UP,  pygame.K_w}:
-                self.clamp_cam()
-
-            self.screen.fill(BG)
-            self.draw_grid()
-            self.draw_panel()
-            if self.share_dialog_open:
-                self.draw_share_dialog()
-            pygame.display.flip()
-
-
-if __name__ == "__main__":
-    Editor().run()
+    // Fall back to long compressed code
+    if(!data) data=decodeMap(raw);
+    initMap(data,raw);
+    document.getElementById('load-error').textContent='';
+  }catch(e){
+    document.getElementById('load-error').textContent='Invalid code — check you copied it fully.';
+  }
+}
+
+function loadDemo(){
+  const C=24,R=16;
+  const g=Array.from({length:R},()=>Array(C).fill(EMPTY));
+  for(let c=0;c<C;c++){g[0][c]=WALL;g[R-1][c]=WALL;}
+  for(let r=0;r<R;r++){g[r][0]=WALL;g[r][C-1]=WALL;}
+  [[2,2],[2,3],[2,4],[3,4],[4,4],[4,3],[6,2],[6,3],[6,4],[6,5],
+   [8,3],[8,4],[9,4],[10,4],[10,5],[10,6],[12,2],[12,3],[14,3],[14,4],[14,5]]
+    .forEach(([r,c])=>{if(r<R&&c<C)g[r][c]=WALL;});
+  g[1][1]=START; g[R-2][C-2]=END;
+  [[2,6],[5,14],[8,10],[11,18],[4,20]].forEach(([r,c])=>{if(r<R&&c<C)g[r][c]=ITEM;});
+  [[3,10],[7,4],[9,16]].forEach(([r,c])=>{if(r<R&&c<C)g[r][c]=ENEMY;});
+  g[1][4]=WARP; g[7][12]=WARP; g[4][8]=WARP+1; g[9][20]=WARP+1;
+  g[6][16]=WARP+2; g[12][8]=WARP+2;
+  initMap({name:'Demo Maze',cols:C,rows:R,num_warps:3,grid:g},'demo');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GAME STATE
+// ═══════════════════════════════════════════════════════════════════
+let mapData=null,playerX=0,playerY=0;
+let steps=0,warpsUsed=0,collectedItems=new Set(),totalItems=0;
+let blocked=false,animFrame=null;
+let camX=0,camY=0,TILE=24;
+let warpTargets={};
+let touchStartX=0,touchStartY=0,touchMoved=false;
+let currentCode='';
+
+function initMap(data,code=''){
+  mapData=data; currentCode=code;
+  warpTargets={};
+  for(let r=0;r<data.rows;r++)
+    for(let c=0;c<data.cols;c++){
+      const v=data.grid[r][c];
+      if(v>=WARP){if(!warpTargets[v])warpTargets[v]=[];warpTargets[v].push([c,r]);}
+    }
+  totalItems=0;
+  for(let r=0;r<data.rows;r++) for(let c=0;c<data.cols;c++) if(data.grid[r][c]===ITEM)totalItems++;
+  document.getElementById('hud-name').textContent=data.name;
+  showPage('game');
+  resetPlayer();
+}
+
+function resizeCanvas(){
+  if(!mapData) return;
+  const page=document.getElementById('page-game');
+  const dpad=document.getElementById('dpad-bar');
+  const dpadH=dpad.offsetHeight||0;
+  const VW=page.clientWidth;
+  const VH=page.clientHeight - dpadH;
+  const c=document.getElementById('canvas');
+  c.width=VW; c.height=VH;
+  TILE=Math.max(12,Math.min(40,Math.floor(Math.min(VW/15,VH/12))));
+}
+window.addEventListener('resize',()=>{ if(currentPage==='game')resizeCanvas(); if(currentPage==='editor')edResizeCanvas(); });
+
+function resetPlayer(){
+  collectedItems.clear(); steps=0; warpsUsed=0; blocked=false;
+  document.getElementById('win-overlay').classList.remove('show');
+  document.getElementById('msg-box').classList.remove('show');
+  outer:for(let r=0;r<mapData.rows;r++)
+    for(let c=0;c<mapData.cols;c++)
+      if(mapData.grid[r][c]===START){playerX=c;playerY=r;break outer;}
+  updateHUD();
+  resizeCanvas();
+  recenter();
+  if(animFrame)cancelAnimationFrame(animFrame);
+  loop();
+}
+
+function recenter(){
+  if(!mapData) return;
+  const c=document.getElementById('canvas');
+  const VW=c.width,VH=c.height;
+  const mxc=Math.max(0,mapData.cols*TILE-VW);
+  const myc=Math.max(0,mapData.rows*TILE-VH);
+  camX=Math.max(0,Math.min(mxc,playerX*TILE-VW/2+TILE/2));
+  camY=Math.max(0,Math.min(myc,playerY*TILE-VH/2+TILE/2));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// INPUT
+// ═══════════════════════════════════════════════════════════════════
+document.addEventListener('keydown',e=>{
+  if(currentPage!=='game'||blocked) return;
+  const m={ArrowUp:[0,-1],ArrowDown:[0,1],ArrowLeft:[-1,0],ArrowRight:[1,0],w:[0,-1],s:[0,1],a:[-1,0],d:[1,0]};
+  const v=m[e.key]; if(v){e.preventDefault();tryMove(...v);}
+});
+
+['u','d','l','r'].forEach(dir=>{
+  const el=document.getElementById('dp-'+dir);
+  const deltas={u:[0,-1],d:[0,1],l:[-1,0],r:[1,0]};
+  el.addEventListener('pointerdown',e=>{e.preventDefault();el.classList.add('pressed');if(!blocked&&currentPage==='game')tryMove(...deltas[dir]);});
+  el.addEventListener('pointerup',()=>el.classList.remove('pressed'));
+  el.addEventListener('pointerleave',()=>el.classList.remove('pressed'));
+});
+
+const gp=document.getElementById('page-game');
+gp.addEventListener('touchstart',e=>{if(e.target.closest('#dpad-bar'))return;touchStartX=e.touches[0].clientX;touchStartY=e.touches[0].clientY;touchMoved=false;},{passive:true});
+gp.addEventListener('touchmove', e=>{touchMoved=true;e.preventDefault();},{passive:false});
+gp.addEventListener('touchend',  e=>{
+  if(e.target.closest('#dpad-bar'))return;
+  if(blocked||!touchMoved)return;
+  const dx=e.changedTouches[0].clientX-touchStartX;
+  const dy=e.changedTouches[0].clientY-touchStartY;
+  if(Math.max(Math.abs(dx),Math.abs(dy))<20)return;
+  if(Math.abs(dx)>Math.abs(dy))tryMove(dx>0?1:-1,0);
+  else tryMove(0,dy>0?1:-1);
+},{passive:true});
+
+function tryMove(dx,dy){
+  const nx=playerX+dx,ny=playerY+dy;
+  if(nx<0||nx>=mapData.cols||ny<0||ny>=mapData.rows)return;
+  const tile=mapData.grid[ny][nx];
+  if(tile===WALL)return;
+  playerX=nx;playerY=ny;steps++;
+  if(tile===ITEM&&!collectedItems.has(`${ny},${nx}`)){
+    collectedItems.add(`${ny},${nx}`);showMsg('ITEM','★ You found an item!');
+  }else if(tile===LAVA){
+    lavaKill(); return;
+  }else if(tile===ENEMY){
+    showMsg('ENEMY','! Enemy! +5 step penalty',true);steps+=5;
+  }else if(tile>=WARP){doWarp(tile);return;}
+  else if(tile===END){win();return;}
+  updateHUD();
+}
+
+function doWarp(wv){
+  warpsUsed++;
+  const others=(warpTargets[wv]||[]).filter(([c,r])=>!(c===playerX&&r===playerY));
+  flashWarp(()=>{
+    if(others.length){const t=others[Math.floor(Math.random()*others.length)];playerX=t[0];playerY=t[1];}
+    updateHUD();blocked=false;
+  });
+}
+function lavaKill(){
+  blocked=true;
+  const f=document.getElementById('warp-flash');
+  f.style.background='#ff4400';
+  f.style.transition='opacity 0.08s';f.style.opacity='0.9';
+  setTimeout(()=>{
+    f.style.transition='opacity 0.4s';f.style.opacity='0';
+    setTimeout(()=>{f.style.background='white';},500);
+  },180);
+  showMsg('☠ LAVA','You fell in the lava! Restarting…',true);
+  setTimeout(()=>{ blocked=false; resetPlayer(); },1600);
+}
+  blocked=true;
+  const f=document.getElementById('warp-flash');
+  f.style.transition='opacity 0.1s';f.style.opacity='1';
+  setTimeout(()=>{f.style.transition='opacity 0.22s';f.style.opacity='0';setTimeout(cb,240);},110);
+}
+function win(){
+  document.getElementById('win-stats').innerHTML=`Steps: ${steps}<br>Items: ${collectedItems.size} / ${totalItems}<br>Warps: ${warpsUsed}`;
+  document.getElementById('win-overlay').classList.add('show');
+  if(animFrame){cancelAnimationFrame(animFrame);animFrame=null;}
+}
+function updateHUD(){
+  document.getElementById('hud-steps').textContent=steps;
+  document.getElementById('hud-items').textContent=`${collectedItems.size}/${totalItems}`;
+}
+let msgTimer=null;
+function showMsg(title,text,long=false){
+  const b=document.getElementById('msg-box');
+  document.getElementById('msg-title').textContent=title;
+  document.getElementById('msg-text').textContent=text;
+  b.classList.add('show');
+  if(msgTimer)clearTimeout(msgTimer);
+  msgTimer=setTimeout(()=>b.classList.remove('show'),long?2000:1200);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════════════════════════
+function loop(){render();animFrame=requestAnimationFrame(loop);}
+
+function render(){
+  const canvas=document.getElementById('canvas');
+  const ctx=canvas.getContext('2d');
+  const T=TILE,VW=canvas.width,VH=canvas.height;
+  const g=mapData.grid,now=Date.now();
+
+  // Smooth camera — always keeps player centred
+  const tcx=playerX*T-VW/2+T/2,tcy=playerY*T-VH/2+T/2;
+  const mxc=Math.max(0,mapData.cols*T-VW),myc=Math.max(0,mapData.rows*T-VH);
+  camX+=(Math.max(0,Math.min(mxc,tcx))-camX)*0.18;
+  camY+=(Math.max(0,Math.min(myc,tcy))-camY)*0.18;
+  ctx.clearRect(0,0,VW,VH);
+
+  const c0=Math.max(0,Math.floor(camX/T)),r0=Math.max(0,Math.floor(camY/T));
+  const c1=Math.min(mapData.cols,c0+Math.ceil(VW/T)+2);
+  const r1=Math.min(mapData.rows,r0+Math.ceil(VH/T)+2);
+
+  for(let r=r0;r<r1;r++){
+    for(let c=c0;c<c1;c++){
+      const val=g[r][c];
+      const x=Math.floor(c*T-camX),y=Math.floor(r*T-camY);
+      if(val===WALL){
+        ctx.fillStyle='#2a1e10';ctx.fillRect(x,y,T,T);
+        if(T>=16){ctx.fillStyle='#3c2c18';ctx.fillRect(x+1,y+1,T-2,4);ctx.fillRect(x+1,y+8,T-2,4);}
+      }else{
+        ctx.fillStyle=(r+c)%2===0?'#10102a':'#13132e';ctx.fillRect(x,y,T,T);
+        if(val===START){ctx.fillStyle='#183524';ctx.fillRect(x,y,T,T);drawLabel(ctx,'S','#4dff91',x,y,T);}
+        else if(val===END){ctx.fillStyle='#32101a';ctx.fillRect(x,y,T,T);drawLabel(ctx,'E','#ff4d6d',x,y,T);}
+        else if(val===ITEM&&!collectedItems.has(`${r},${c}`)){
+          const p=0.6+0.4*Math.sin(now/280);
+          ctx.fillStyle=`rgba(255,210,60,${p})`;
+          ctx.beginPath();ctx.arc(x+T/2,y+T/2,Math.max(2,T*.35),0,Math.PI*2);ctx.fill();
+          if(T>=16)drawLabel(ctx,'*','#fff',x,y,T);
+        }else if(val===ENEMY){
+          const bob=T>=14?Math.sin(now/380)*2:0;
+          ctx.fillStyle='#ff4d80';ctx.beginPath();ctx.arc(x+T/2,y+T/2+bob,Math.max(2,T*.34),0,Math.PI*2);ctx.fill();
+          if(T>=14)drawLabel(ctx,'!','#fff',x,y+bob,T);
+        }else if(val===LAVA){
+          const flicker=0.75+0.25*Math.sin(now/120+c*0.8+r*0.6);
+          ctx.fillStyle=`rgb(${Math.round(200+40*flicker)},${Math.round(40+20*flicker)},10)`;
+          ctx.fillRect(x,y,T,T);
+          ctx.fillStyle=`rgba(255,200,0,${0.3+0.4*Math.sin(now/90+c+r)})`;
+          ctx.fillRect(x+T*.2,y+T*.1,T*.15,T*.8);
+          ctx.fillRect(x+T*.6,y+T*.3,T*.12,T*.5);
+        }else if(val>=WARP){
+          const col=warpColor(val-WARP);
+          if(T>=12){
+            const gr=ctx.createRadialGradient(x+T/2,y+T/2,1,x+T/2,y+T/2,T/2);
+            gr.addColorStop(0,'rgba(255,255,255,.45)');
+            gr.addColorStop(.5,col.replace('rgb','rgba').replace(')',',0.73)'));
+            gr.addColorStop(1,col.replace('rgb','rgba').replace(')',',0.13)'));
+            ctx.fillStyle=gr;
+          }else ctx.fillStyle=col;
+          ctx.fillRect(x,y,T-1,T-1);
+          if(T>=14){
+            ctx.save();ctx.translate(x+T/2,y+T/2);ctx.rotate(now/550);
+            ctx.strokeStyle='rgba(255,255,255,.3)';ctx.lineWidth=1;
+            for(let i=0;i<4;i++){ctx.rotate(Math.PI/2);ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(T/2-1,0);ctx.stroke();}
+            ctx.restore();
+            // No number label on warps
+          }
+        }
+      }
+    }
+  }
+
+  // Player
+  const px=Math.floor(playerX*T-camX+T/2),py=Math.floor(playerY*T-camY+T/2);
+  const bob=T>=14?Math.sin(now/240)*1.5:0,pr=Math.max(4,T*.42);
+  // Beacon
+  const bp=(Math.sin(now/400)+1)/2;
+  ctx.beginPath();ctx.arc(px,py,pr+4+bp*8,0,Math.PI*2);
+  ctx.strokeStyle=`rgba(255,216,77,${0.6-bp*0.5})`;ctx.lineWidth=2;ctx.stroke();
+  // Shadow
+  ctx.fillStyle='rgba(0,0,0,.3)';ctx.beginPath();ctx.ellipse(px,py+pr*.6,pr*.7,Math.max(2,pr*.25),0,0,Math.PI*2);ctx.fill();
+  // Body
+  ctx.fillStyle='#ffd84d';ctx.beginPath();ctx.arc(px,py+bob,pr,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#a88820';ctx.lineWidth=2;ctx.stroke();
+  // Eyes
+  if(T>=14){const er=Math.max(1.5,pr*.22);ctx.fillStyle='#1a1a2e';
+    ctx.beginPath();ctx.arc(px-pr*.4,py-pr*.28+bob,er,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(px+pr*.4,py-pr*.28+bob,er,0,Math.PI*2);ctx.fill();}
+}
+function drawLabel(ctx,text,color,x,y,T){
+  ctx.fillStyle=color;ctx.font=`bold ${Math.max(9,T-5)}px monospace`;
+  ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(text,x+T/2,y+T/2);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// IN-BROWSER EDITOR
+// ═══════════════════════════════════════════════════════════════════
+let edGrid=null, edTile=1, edNumWarps=0, edWarpCounts=[], edDrawing=false, edHistory=[];
+let edCamX=0,edCamY=0,edTileSize=18,edPanning=false,edPanStart=[0,0],edCamStart=[0,0];
+
+function edInit(){
+  edGrid=Array.from({length:ED_ROWS},()=>Array(ED_COLS).fill(EMPTY));
+  edNumWarps=0; edWarpCounts=[]; edHistory=[];
+  edResizeCanvas(); edRender();
+}
+
+function edResizeCanvas(){
+  const wrap=document.getElementById('ed-canvas-wrap');
+  const c=document.getElementById('ed-canvas');
+  c.width=wrap.clientWidth; c.height=wrap.clientHeight;
+  edRender();
+}
+
+function edSelTile(t){
+  edTile=t;
+  document.querySelectorAll('.ep-btn').forEach(b=>b.classList.remove('active'));
+  const ids={0:'ep-erase',1:'ep-wall',2:'ep-start',3:'ep-end',4:'ep-item',5:'ep-enemy',6:'ep-lava'};
+  if(ids[t]) document.getElementById(ids[t]).classList.add('active');
+  else{
+    // warp selected
+    document.querySelectorAll('[id^=ep-warp-]').forEach(b=>b.classList.remove('active'));
+    const wb=document.getElementById(`ep-warp-${t-WARP}`);
+    if(wb)wb.classList.add('active');
+  }
+}
+
+function edAddWarp(){
+  edWarpCounts.push(0); edNumWarps++;
+  const i=edNumWarps-1;
+  const col=warpColor(i);
+  const div=document.createElement('button');
+  div.className='ep-btn'; div.id=`ep-warp-${i}`;
+  div.innerHTML=`<span class="ep-swatch" style="background:${col}"></span>Warp ${i+1} [0/2]`;
+  div.onclick=()=>edSelTile(WARP+i);
+  document.getElementById('ep-warps').appendChild(div);
+  edSelTile(WARP+i);
+  epMsg(`Added Warp ${i+1} — place 2 tiles`);
+}
+
+function edPlace(c,r){
+  if(c<0||c>=ED_COLS||r<0||r>=ED_ROWS)return;
+  edPushHistory();
+  if(edTile===EMPTY){
+    const old=edGrid[r][c];
+    if(old>=WARP) edWarpCounts[old-WARP]=Math.max(0,edWarpCounts[old-WARP]-1);
+    edGrid[r][c]=EMPTY;
+  }else if(edTile>=WARP){
+    const wi=edTile-WARP;
+    if(edWarpCounts[wi]>=2){epMsg(`Warp ${wi+1} already has 2 tiles!`);return;}
+    const old=edGrid[r][c];
+    if(old>=WARP&&old!==edTile) edWarpCounts[old-WARP]=Math.max(0,edWarpCounts[old-WARP]-1);
+    edGrid[r][c]=edTile;
+    edWarpCounts[wi]++;
+    document.getElementById(`ep-warp-${wi}`).textContent='';
+    document.getElementById(`ep-warp-${wi}`).innerHTML=`<span class="ep-swatch" style="background:${warpColor(wi)}"></span>Warp ${wi+1} [${edWarpCounts[wi]}/2]`;
+  }else{
+    const old=edGrid[r][c];
+    if(old>=WARP) edWarpCounts[old-WARP]=Math.max(0,edWarpCounts[old-WARP]-1);
+    edGrid[r][c]=edTile;
+  }
+  edRender();
+}
+
+function edPushHistory(){
+  edHistory.push({grid:edGrid.map(r=>[...r]),wc:[...edWarpCounts]});
+  if(edHistory.length>40)edHistory.shift();
+}
+function edUndo(){
+  if(!edHistory.length){epMsg('Nothing to undo');return;}
+  const s=edHistory.pop();
+  edGrid=s.grid; edWarpCounts=s.wc;
+  edRender();
+}
+function edClear(){
+  edPushHistory();
+  edGrid=Array.from({length:ED_ROWS},()=>Array(ED_COLS).fill(EMPTY));
+  edWarpCounts=edWarpCounts.map(()=>0);
+  edRender(); epMsg('Grid cleared');
+}
+function epMsg(t){
+  const el=document.getElementById('ep-msg'); el.textContent=t;
+  setTimeout(()=>{if(el.textContent===t)el.textContent='';},2500);
+}
+
+async function edSaveMap(){
+  const starts=edGrid.flat().filter(v=>v===START).length;
+  const ends=edGrid.flat().filter(v=>v===END).length;
+  if(!starts){epMsg('Need a Start tile!');return;}
+  if(!ends){epMsg('Need an Exit tile!');return;}
+  const badW=edWarpCounts.findIndex(c=>c===1);
+  if(badW>=0){epMsg(`Warp ${badW+1} needs 2 tiles!`);return;}
+
+  epMsg('Saving…');
+  const name=document.getElementById('ed-name-input').value.trim()||'My Map';
+  const data={name,cols:ED_COLS,rows:ED_ROWS,num_warps:edNumWarps,grid:edGrid};
+  const longCode=encodeMap(data);
+
+  let displayCode=longCode;
+  let shortCode=null;
+
+  if(JSONBIN_KEY){
+    shortCode=await saveToCloud(data);
+    if(shortCode){
+      displayCode=shortCode;
+      addSaved(shortCode,name);
+    }
+  }
+  if(!shortCode){
+    // No API key — store the long code locally and show it
+    const localId=Math.random().toString(36).slice(2,10);
+    addSaved(longCode,name);
+    displayCode=longCode;
+  }
+
+  // Show share modal
+  currentCode=displayCode;
+  mapData=data;  // so share works if they switch to play
+  document.getElementById('hud-name').textContent=name;
+  openShareWith(displayCode);
+  epMsg('Map saved!');
+  renderSavedList();
+}
+
+// Editor canvas events
+const edC=document.getElementById('ed-canvas');
+edC.addEventListener('mousedown',e=>{
+  if(e.button===1){edPanning=true;edPanStart=[e.offsetX,e.offsetY];edCamStart=[edCamX,edCamY];return;}
+  edDrawing=true; edPlace(...edXY(e.offsetX,e.offsetY));
+});
+edC.addEventListener('mousemove',e=>{
+  if(edPanning){edCamX=edCamStart[0]-(e.offsetX-edPanStart[0]);edCamY=edCamStart[1]-(e.offsetY-edPanStart[1]);edClampCam();edRender();return;}
+  if(edDrawing) edPlace(...edXY(e.offsetX,e.offsetY));
+});
+edC.addEventListener('mouseup',e=>{edDrawing=false;edPanning=false;});
+edC.addEventListener('mouseleave',()=>{edDrawing=false;edPanning=false;});
+edC.addEventListener('contextmenu',e=>{e.preventDefault();const[c,r]=edXY(e.offsetX,e.offsetY);edTile=EMPTY;edPlace(c,r);edTile=edTile;});
+edC.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const old=edTileSize;
+  edTileSize=Math.max(6,Math.min(48,edTileSize-(e.deltaY>0?2:-2)));
+  const scale=edTileSize/old;
+  edCamX=(edCamX+e.offsetX)*scale-e.offsetX;
+  edCamY=(edCamY+e.offsetY)*scale-e.offsetY;
+  edClampCam(); edRender();
+},{passive:false});
+
+// Touch for editor
+let edTouch=null;
+edC.addEventListener('touchstart',e=>{e.preventDefault();edTouch=e.touches[0];edDrawing=true;edPlace(...edXY(edTouch.clientX-edC.getBoundingClientRect().left,edTouch.clientY-edC.getBoundingClientRect().top));},{passive:false});
+edC.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];const rect=edC.getBoundingClientRect();if(edDrawing)edPlace(...edXY(t.clientX-rect.left,t.clientY-rect.top));},{passive:false});
+edC.addEventListener('touchend',()=>{edDrawing=false;});
+
+function edXY(px,py){
+  return[Math.floor((px+edCamX)/edTileSize), Math.floor((py+edCamY)/edTileSize)];
+}
+function edClampCam(){
+  edCamX=Math.max(0,Math.min(edCamX,ED_COLS*edTileSize-edC.width));
+  edCamY=Math.max(0,Math.min(edCamY,ED_ROWS*edTileSize-edC.height));
+}
+
+function edRender(){
+  const c=document.getElementById('ed-canvas');
+  if(!c.width)return;
+  const ctx=c.getContext('2d');
+  const T=edTileSize;
+  ctx.clearRect(0,0,c.width,c.height);
+  const c0=Math.max(0,Math.floor(edCamX/T)),r0=Math.max(0,Math.floor(edCamY/T));
+  const c1=Math.min(ED_COLS,c0+Math.ceil(c.width/T)+2);
+  const r1=Math.min(ED_ROWS,r0+Math.ceil(c.height/T)+2);
+  for(let r=r0;r<r1;r++){
+    for(let cc=c0;cc<c1;cc++){
+      const v=edGrid[r][cc];
+      const x=Math.floor(cc*T-edCamX),y=Math.floor(r*T-edCamY);
+      if(v===WALL){ctx.fillStyle='#3c2c18';ctx.fillRect(x,y,T,T);}
+      else if(v===EMPTY){ctx.fillStyle=(r+cc)%2===0?'#10102a':'#13132e';ctx.fillRect(x,y,T,T);}
+      else if(v===START){ctx.fillStyle='#1a4028';ctx.fillRect(x,y,T,T);drawLabel(ctx,'S','#4dff91',x,y,T);}
+      else if(v===END){ctx.fillStyle='#401020';ctx.fillRect(x,y,T,T);drawLabel(ctx,'E','#ff4d6d',x,y,T);}
+      else if(v===ITEM){ctx.fillStyle='#403808';ctx.fillRect(x,y,T,T);if(T>=10)drawLabel(ctx,'*','#ffd84d',x,y,T);}
+      else if(v===ENEMY){ctx.fillStyle='#401028';ctx.fillRect(x,y,T,T);if(T>=10)drawLabel(ctx,'!','#ff4d80',x,y,T);}
+      else if(v===LAVA){ctx.fillStyle='#c83c0a';ctx.fillRect(x,y,T,T);if(T>=10)drawLabel(ctx,'~','#ffaa44',x,y,T);}
+      else{ctx.fillStyle=warpColor(v-WARP);ctx.fillRect(x,y,T,T);}  // no number label
+      if(T>=6){ctx.strokeStyle='rgba(255,255,255,.04)';ctx.lineWidth=0.5;ctx.strokeRect(x,y,T,T);}
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SAVED LIST
+// ═══════════════════════════════════════════════════════════════════
+function renderSavedList(){
+  const saved=getSaved();
+  const el=document.getElementById('saved-list');
+  const items=document.getElementById('saved-items');
+  if(!saved.length){el.style.display='none';return;}
+  el.style.display='block';
+  items.innerHTML='';
+  saved.forEach(s=>{
+    const d=document.createElement('div');
+    d.className='saved-item';
+    d.innerHTML=`<span class="si-code">${s.code.length<=8?s.code:s.code.slice(0,6)+'…'}</span><span class="si-name">${s.name}</span><span class="si-del" onclick="event.stopPropagation();removeSaved('${s.code}');renderSavedList()">✕</span>`;
+    d.addEventListener('click',()=>{ document.getElementById('code-input').value=s.code; loadCode(); });
+    items.appendChild(d);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SHARE
+// ═══════════════════════════════════════════════════════════════════
+function buildShareURL(code){
+  return `${location.origin}${location.pathname}#${code}`;
+}
+function openShareWith(code){
+  const url=buildShareURL(code);
+  document.getElementById('share-code-box').textContent=code.length<=8?code:code.slice(0,12)+'…';
+  document.getElementById('share-code-box').dataset.full=code;
+  document.getElementById('share-url-box').value=url;
+  document.getElementById('share-msg').textContent='';
+  document.getElementById('native-share-btn').style.display=navigator.share?'inline-flex':'none';
+  document.getElementById('share-modal').classList.add('open');
+}
+function openShare(){
+  if(!mapData)return;
+  const code=currentCode||encodeMap(mapData);
+  openShareWith(code);
+}
+function closeShare(){document.getElementById('share-modal').classList.remove('open');}
+function copyCode(){
+  const code=document.getElementById('share-code-box').dataset.full||document.getElementById('share-code-box').textContent;
+  navigator.clipboard?.writeText(code).then(()=>{document.getElementById('share-msg').textContent='✓ Code copied!';})
+    .catch(()=>{document.getElementById('share-msg').textContent='✓ Select the code above to copy';});
+}
+function nativeShare(){
+  const url=document.getElementById('share-url-box').value;
+  navigator.share({title:'⚡ Warp Maze',text:'Can you solve this warp maze?',url}).catch(()=>{});
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// BOOT
+// ═══════════════════════════════════════════════════════════════════
+edInit();
+renderSavedList();
+
+// Auto-load from URL hash
+window.addEventListener('load',()=>{
+  const hash=location.hash.slice(1);
+  if(hash){
+    document.getElementById('code-input').value=hash;
+    loadCode();
+  }
+});
+</script>
+</body>
+</html>
