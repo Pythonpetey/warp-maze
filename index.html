@@ -38,7 +38,7 @@
 </style>
 <script>
 // ▼▼▼ PASTE YOUR JSONBIN.IO API KEY HERE (optional — enables short codes) ▼▼▼
-const JSONBIN_KEY = '$2a$10$6C.gQ4ud8JBQlYiJTNsPKuj16Dcc/NTL.qclOHWW3EbvCkr4Mj6h2';
+const JSONBIN_KEY = '';
 // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 const JSONBIN_URL = 'https://api.jsonbin.io/v3/b';
 </script>
@@ -406,6 +406,7 @@ body {
     <button class="ep-btn" id="ep-end"   onclick="edSelTile(3)"><span class="ep-swatch" style="background:#a03020"></span>Exit</button>
     <button class="ep-btn" id="ep-item"  onclick="edSelTile(4)"><span class="ep-swatch" style="background:#a09010"></span>Item ★</button>
     <button class="ep-btn" id="ep-enemy" onclick="edSelTile(5)"><span class="ep-swatch" style="background:#a02850"></span>Enemy !</button>
+    <button class="ep-btn" id="ep-lava"  onclick="edSelTile(6)"><span class="ep-swatch" style="background:#c83c0a"></span>Lava ☠</button>
     <div class="ep-sep"></div>
     <div class="ep-title">WARPS <button onclick="edAddWarp()" style="font-family:'Press Start 2P',monospace;font-size:7px;padding:3px 5px;background:#1a3a1a;border:1px solid #4dff91;color:#4dff91;border-radius:3px;cursor:pointer">+</button></div>
     <div id="ep-warps"></div>
@@ -452,7 +453,7 @@ body {
 // ═══════════════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════════
-const EMPTY=0,WALL=1,START=2,END=3,ITEM=4,ENEMY=5,WARP=6;
+const EMPTY=0,WALL=1,START=2,END=3,ITEM=4,ENEMY=5,LAVA=6,WARP=7;
 const ED_COLS=40, ED_ROWS=30;  // editor grid size (lighter than 160x120 for browser)
 
 function warpColor(idx){
@@ -682,6 +683,8 @@ function tryMove(dx,dy){
   playerX=nx;playerY=ny;steps++;
   if(tile===ITEM&&!collectedItems.has(`${ny},${nx}`)){
     collectedItems.add(`${ny},${nx}`);showMsg('ITEM','★ You found an item!');
+  }else if(tile===LAVA){
+    lavaKill(); return;
   }else if(tile===ENEMY){
     showMsg('ENEMY','! Enemy! +5 step penalty',true);steps+=5;
   }else if(tile>=WARP){doWarp(tile);return;}
@@ -697,7 +700,18 @@ function doWarp(wv){
     updateHUD();blocked=false;
   });
 }
-function flashWarp(cb){
+function lavaKill(){
+  blocked=true;
+  const f=document.getElementById('warp-flash');
+  f.style.background='#ff4400';
+  f.style.transition='opacity 0.08s';f.style.opacity='0.9';
+  setTimeout(()=>{
+    f.style.transition='opacity 0.4s';f.style.opacity='0';
+    setTimeout(()=>{f.style.background='white';},500);
+  },180);
+  showMsg('☠ LAVA','You fell in the lava! Restarting…',true);
+  setTimeout(()=>{ blocked=false; resetPlayer(); },1600);
+}
   blocked=true;
   const f=document.getElementById('warp-flash');
   f.style.transition='opacity 0.1s';f.style.opacity='1';
@@ -764,6 +778,13 @@ function render(){
           const bob=T>=14?Math.sin(now/380)*2:0;
           ctx.fillStyle='#ff4d80';ctx.beginPath();ctx.arc(x+T/2,y+T/2+bob,Math.max(2,T*.34),0,Math.PI*2);ctx.fill();
           if(T>=14)drawLabel(ctx,'!','#fff',x,y+bob,T);
+        }else if(val===LAVA){
+          const flicker=0.75+0.25*Math.sin(now/120+c*0.8+r*0.6);
+          ctx.fillStyle=`rgb(${Math.round(200+40*flicker)},${Math.round(40+20*flicker)},10)`;
+          ctx.fillRect(x,y,T,T);
+          ctx.fillStyle=`rgba(255,200,0,${0.3+0.4*Math.sin(now/90+c+r)})`;
+          ctx.fillRect(x+T*.2,y+T*.1,T*.15,T*.8);
+          ctx.fillRect(x+T*.6,y+T*.3,T*.12,T*.5);
         }else if(val>=WARP){
           const col=warpColor(val-WARP);
           if(T>=12){
@@ -779,7 +800,7 @@ function render(){
             ctx.strokeStyle='rgba(255,255,255,.3)';ctx.lineWidth=1;
             for(let i=0;i<4;i++){ctx.rotate(Math.PI/2);ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(T/2-1,0);ctx.stroke();}
             ctx.restore();
-            drawLabel(ctx,String(val-WARP+1),'#fff',x,y,T);
+            // No number label on warps
           }
         }
       }
@@ -830,7 +851,7 @@ function edResizeCanvas(){
 function edSelTile(t){
   edTile=t;
   document.querySelectorAll('.ep-btn').forEach(b=>b.classList.remove('active'));
-  const ids={0:'ep-erase',1:'ep-wall',2:'ep-start',3:'ep-end',4:'ep-item',5:'ep-enemy'};
+  const ids={0:'ep-erase',1:'ep-wall',2:'ep-start',3:'ep-end',4:'ep-item',5:'ep-enemy',6:'ep-lava'};
   if(ids[t]) document.getElementById(ids[t]).classList.add('active');
   else{
     // warp selected
@@ -993,7 +1014,8 @@ function edRender(){
       else if(v===END){ctx.fillStyle='#401020';ctx.fillRect(x,y,T,T);drawLabel(ctx,'E','#ff4d6d',x,y,T);}
       else if(v===ITEM){ctx.fillStyle='#403808';ctx.fillRect(x,y,T,T);if(T>=10)drawLabel(ctx,'*','#ffd84d',x,y,T);}
       else if(v===ENEMY){ctx.fillStyle='#401028';ctx.fillRect(x,y,T,T);if(T>=10)drawLabel(ctx,'!','#ff4d80',x,y,T);}
-      else{ctx.fillStyle=warpColor(v-WARP);ctx.fillRect(x,y,T,T);if(T>=10)drawLabel(ctx,String(v-WARP+1),'#fff',x,y,T);}
+      else if(v===LAVA){ctx.fillStyle='#c83c0a';ctx.fillRect(x,y,T,T);if(T>=10)drawLabel(ctx,'~','#ffaa44',x,y,T);}
+      else{ctx.fillStyle=warpColor(v-WARP);ctx.fillRect(x,y,T,T);}  // no number label
       if(T>=6){ctx.strokeStyle='rgba(255,255,255,.04)';ctx.lineWidth=0.5;ctx.strokeRect(x,y,T,T);}
     }
   }
